@@ -19,7 +19,7 @@ public:
         lower_left_corner = camera_origin - focus_dist * w - horizontal / 2 - vertical / 2;
     }
 
-    __device__ __forceinline__ Ray get_ray(float s, float t, curandState *rand_state) {
+    __device__ Ray get_ray(float s, float t, curandState *rand_state) {
         float x, y;
         random_in_unit_disk(rand_state, x, y);
         x *= aperture_radius;

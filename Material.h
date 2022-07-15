@@ -37,7 +37,8 @@ public:
 
 __device__ bool Lambertian::scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
                                     Vec3 &attenuation, Ray &r_out) const {
-    Vec3 target = rec.p + rec.unit_outward_normal + random_in_unit_sphere(rand_state);
+    Vec3 n = dot(r_in.unit_direction, rec.unit_outward_normal) < 0.0f ? rec.unit_outward_normal : -rec.unit_outward_normal;
+    Vec3 target = rec.p + n + random_in_unit_sphere(rand_state);
     attenuation = albedo;
     Vec3 direction = target - rec.p;
     r_out = Ray(rec.p, direction.unit_vector());
@@ -46,7 +47,8 @@ __device__ bool Lambertian::scatter(const Ray &r_in, const HitRecord &rec, curan
 
 __device__ bool Metal::scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
                                Vec3 &attenuation, Ray &r_out) const {
-    Vec3 unit_reflected = reflect(r_in.unit_direction.unit_vector(), rec.unit_outward_normal);
+    Vec3 n = dot(r_in.unit_direction, rec.unit_outward_normal) < 0.0f ? rec.unit_outward_normal : -rec.unit_outward_normal;
+    Vec3 unit_reflected = reflect(r_in.unit_direction, n);
     attenuation = albedo;
     Vec3 direction = unit_reflected + fuzz * random_in_unit_sphere(rand_state);
     r_out = Ray(rec.p, direction.unit_vector());

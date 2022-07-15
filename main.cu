@@ -12,8 +12,8 @@
 #include "Primitive.h"
 #include "Camera.h"
 
-template <int RECURSION_DEPTH = 50>
-__device__ __forceinline__ Vec3 get_color(const Ray &ray, Primitive **primitive_ptrs, int num_primitives,
+template <int RECURSION_DEPTH = 10>
+__device__ Vec3 get_color(const Ray &ray, Primitive **primitive_ptrs, int num_primitives,
                                           curandState *rand_state) {
     Ray cur_ray = ray;
     Vec3 cur_attenuation = Vec3(1.0f, 1.0f, 1.0f);
@@ -46,15 +46,40 @@ __device__ __forceinline__ Vec3 get_color(const Ray &ray, Primitive **primitive_
 
 __global__ void create_world(Primitive **primitive_ptrs, Camera **camera_ptrs, float aspect_ratio) {
     if (threadIdx.x == 0 & blockIdx.x == 0) {
-        primitive_ptrs[0] = new Sphere(Vec3(0.0f, -100.0f, -1.0f), 100.0f, new Lambertian(Vec3(0.8f, 0.8f, 0.0f)));
-        primitive_ptrs[1] = new Sphere(Vec3(0.5f, 0.5f, -1.0f), 0.5f, new Lambertian(Vec3(0.8f, 0.3f, 0.3f)));
-        primitive_ptrs[2] = new Sphere(Vec3(1.5f, 0.5f, -1.0f), 0.5f, new Metal(Vec3(0.8f, 0.6f, 0.2f), 1.0f));
-        primitive_ptrs[3] = new Triangle(Vec3(-0.5f, 0.5f, -1.0f), Vec3(0.0f, 0.5f, -1.0f), Vec3(0.0f, 0.0f, -1.0f),
-                                         new Lambertian(Vec3(0.8f, 0.8f, 0.8f)));
-        camera_ptrs[0] = new Camera(Vec3(0.5f, 0.5f, 1.0f),
-                                    Vec3(0.5f, 0.5f, -1.0f),
+        Material *red = new Lambertian(Vec3(0.65f, 0.05f, 0.05f));
+        Material *green = new Lambertian(Vec3(0.12f, 0.45f, 0.15f));
+        Material *white = new Lambertian(Vec3(0.73f, 0.73f, 0.73f));
+        Material *mirror = new Metal(Vec3(0.8f, 0.8f, 0.9f), 0.0f);
+        Material *gold = new Metal(Vec3(0.9f, 0.73f, 0.05f), 1.0f);
+        Material *glass = new Dielectric(1.5f);
+
+        primitive_ptrs[0] = new Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f),
+                                         red);
+        primitive_ptrs[1] = new Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f,  0.0f), Vec3(0.0f, 1.0f, -1.0f),
+                                         red);
+        primitive_ptrs[2] = new Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f),
+                                         green);
+        primitive_ptrs[3] = new Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f,  0.0f), Vec3(1.0f, 1.0f, -1.0f),
+                                         green);
+        primitive_ptrs[4] = new Triangle(Vec3(0.0f, 0.0f,  0.0f), Vec3(1.0f, 0.0f,  0.0f), Vec3(1.0f, 0.0f, -1.0f),
+                                         white);
+        primitive_ptrs[5] = new Triangle(Vec3(0.0f, 0.0f,  0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f),
+                                         white);
+        primitive_ptrs[6] = new Triangle(Vec3(0.0f, 1.0f,  0.0f), Vec3(1.0f, 1.0f,  0.0f), Vec3(1.0f, 1.0f, -1.0f),
+                                         white);
+        primitive_ptrs[7] = new Triangle(Vec3(0.0f, 1.0f,  0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f),
+                                         white);
+        primitive_ptrs[8] = new Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f),
+                                         white);
+        primitive_ptrs[9] = new Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f),
+                                         white);
+        primitive_ptrs[10] = new Sphere(Vec3(0.75f, 0.15f, -0.55f), 0.15f, mirror);
+        primitive_ptrs[11] = new Sphere(Vec3(0.25f, 0.15f, -0.35f), 0.15f, glass);
+        primitive_ptrs[12] = new Sphere(Vec3(0.55f, 0.10f, -0.15f), 0.10f, gold);
+        camera_ptrs[0] = new Camera(Vec3(0.5f, 0.5f, 1.5f),
+                                    Vec3(0.5f, 0.5f, 0.0f),
                                     Vec3(0.0f, 1.0f, 0.0f),
-                                    0.92f, aspect_ratio, 0.0f);
+                                    0.66f, aspect_ratio, 0.0f);
     }
 }
 
@@ -109,7 +134,7 @@ int main() {
     Vec3 *d_fb;
     checkCudaErrors(cudaMalloc(&d_fb, NUM_PIXELS*sizeof(Vec3)));
 
-    constexpr int NUM_PRIMITIVES = 4;
+    constexpr int NUM_PRIMITIVES = 13;
     Primitive **d_primitive_ptrs;
     checkCudaErrors(cudaMalloc(&d_primitive_ptrs, NUM_PRIMITIVES*sizeof(Primitive*)));
 
