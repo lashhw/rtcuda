@@ -3,17 +3,17 @@
 
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
 
-void check_cuda(cudaError_t result, char const *const func, const char *const file, int const line) {
+void check_cuda(cudaError_t result, char const *const func, const char *const file,
+                int const line) {
     if (result) {
-        std::cerr << "CUDA error = " << static_cast<unsigned int>(result) << " at " <<
-                  file << ":" << line << " '" << func << "' \n";
-        // Make sure we call CUDA Device Reset before exiting
-        cudaDeviceReset();
+        fprintf(stderr, "CUDA error at %s:%d code=%d(%s) \"%s\" \n", file, line,
+                static_cast<unsigned int>(result), cudaGetErrorName(result), func);
         exit(EXIT_FAILURE);
     }
 }
 
 __device__ Vec3 random_in_unit_sphere(curandState *local_rand_state) {
+    // TODO: change to faster implementation
     Vec3 p;
     do {
         p = Vec3(2.0f*curand_uniform(local_rand_state)-1.0f,
@@ -24,6 +24,7 @@ __device__ Vec3 random_in_unit_sphere(curandState *local_rand_state) {
 }
 
 __device__ void random_in_unit_disk(curandState *local_rand_state, float &x, float &y) {
+    // TODO: change to faster implementation
     do {
         x = 2.0f*curand_uniform(local_rand_state)-1.0f;
         y = 2.0f*curand_uniform(local_rand_state)-1.0f;

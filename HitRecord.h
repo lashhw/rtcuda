@@ -6,7 +6,7 @@ struct Material;  // forward declaration
 struct HitRecord {
     float t;
     Vec3 p;
-    Vec3 outward_unit_normal;
+    Vec3 unit_outward_normal;
     Material *mat_ptr;
 };
 

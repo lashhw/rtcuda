@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
-#include <cfloat>
+#include <cmath>
+#include <algorithm>
 #include <curand_kernel.h>
 
 #include "Vec3.h"
@@ -11,48 +12,55 @@
 #include "Primitive.h"
 #include "Camera.h"
 
-__device__ Vec3 get_color(const Ray &r, Primitive **world, curandState *local_rand_state) {
-    Ray cur_ray = r;
-    Vec3 cur_attenuation = Vec3(1.0, 1.0, 1.0);
+template <int RECURSION_DEPTH = 50>
+__device__ __forceinline__ Vec3 get_color(const Ray &ray, Primitive **primitive_ptrs, int num_primitives,
+                                          curandState *rand_state) {
+    Ray cur_ray = ray;
+    Vec3 cur_attenuation = Vec3(1.0f, 1.0f, 1.0f);
 
     HitRecord tmp_rec;
     Vec3 tmp_attenuation;
-    Ray tmp_r_out;
 
-    for (int i = 0; i < 50; i++) {
-        if ((*world)->hit(cur_ray, 0.001, FLT_MAX, tmp_rec)) {
-            if (tmp_rec.mat_ptr->scatter(cur_ray, tmp_rec, local_rand_state, tmp_attenuation, tmp_r_out)) {
-                cur_attenuation *= tmp_attenuation;
-                cur_ray = tmp_r_out;
-            } else {
-                return Vec3(0.0, 0.0, 0.0);
+    for (int i = 0; i < RECURSION_DEPTH; i++) {
+        bool hit_anything = false;
+        for (int j = 0; j < num_primitives; j++) {
+            if (primitive_ptrs[j]->hit(cur_ray, tmp_rec)) {
+                hit_anything = true;
+                cur_ray.tmax = tmp_rec.t;
             }
         }
-        else {
-            return cur_attenuation * Vec3(1.0, 1.0, 1.0);
+
+        if (hit_anything) {
+            if (tmp_rec.mat_ptr->scatter(cur_ray, tmp_rec, rand_state, tmp_attenuation, cur_ray)) {
+                cur_attenuation *= tmp_attenuation;
+            } else {
+                return Vec3(0.0f, 0.0f, 0.0f);
+            }
+        } else {
+            return cur_attenuation;
         }
     }
 
-    return Vec3(0.0, 0.0, 0.0);
+    return Vec3(0.0f, 0.0f, 0.0f);
 }
 
-__global__ void create_world(Primitive **d_list, Primitive **d_world, Camera **d_camera, float aspect_ratio) {
+__global__ void create_world(Primitive **primitive_ptrs, Camera **camera_ptrs, float aspect_ratio) {
     if (threadIdx.x == 0 & blockIdx.x == 0) {
-        *(d_list + 0) = new Sphere(Vec3(0, -100, -1), 100, new Lambertian(Vec3(0.8, 0.8, 0.0)));
-        *(d_list + 1) = new Sphere(Vec3(0.5, 0.5, -1), 0.5, new Lambertian(Vec3(0.8, 0.3, 0.3)));
-        *(d_list + 2) = new Sphere(Vec3(1.5, 0.5, -1), 0.5, new Metal(Vec3(0.8, 0.6, 0.2), 1.0));
-        *(d_list + 3) = new Sphere(Vec3(-0.5, 0.5, -1), 0.5, new Dielectric(1.5));
-        *d_world = new PrimitiveList(d_list, 4);
-        *d_camera = new Camera(Vec3(0.5, 0.5, 1.0),
-                               Vec3(0.5, 0.5, -1.0),
-                               Vec3(0.0, 1.0, 0.0),
-                               0.92, aspect_ratio, 0.5);
+        primitive_ptrs[0] = new Sphere(Vec3(0.0f, -100.0f, -1.0f), 100.0f, new Lambertian(Vec3(0.8f, 0.8f, 0.0f)));
+        primitive_ptrs[1] = new Sphere(Vec3(0.5f, 0.5f, -1.0f), 0.5f, new Lambertian(Vec3(0.8f, 0.3f, 0.3f)));
+        primitive_ptrs[2] = new Sphere(Vec3(1.5f, 0.5f, -1.0f), 0.5f, new Metal(Vec3(0.8f, 0.6f, 0.2f), 1.0f));
+        primitive_ptrs[3] = new Triangle(Vec3(-0.5f, 0.5f, -1.0f), Vec3(0.0f, 0.5f, -1.0f), Vec3(0.0f, 0.0f, -1.0f),
+                                         new Lambertian(Vec3(0.8f, 0.8f, 0.8f)));
+        camera_ptrs[0] = new Camera(Vec3(0.5f, 0.5f, 1.0f),
+                                    Vec3(0.5f, 0.5f, -1.0f),
+                                    Vec3(0.0f, 1.0f, 0.0f),
+                                    0.92f, aspect_ratio, 0.0f);
     }
 }
 
 __global__ void render_init(int max_x, int max_y, curandState *rand_state) {
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
     if ((i >= max_x) || (j >= max_y)) return;
 
     int pixel_idx = j * max_x + i;
@@ -61,82 +69,90 @@ __global__ void render_init(int max_x, int max_y, curandState *rand_state) {
 
 __global__ void render(Vec3 *fb, curandState *rand_state, int num_samples,
                        int max_x, int max_y,
-                       Primitive **world, Camera **camera) {
+                       Primitive **primitive_ptrs, int num_primitives,
+                       Camera **camera_ptrs) {
+    // TODO: eliminate fp_64 operations
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     if ((i >= max_x) || (j >= max_y)) return;
 
     int pixel_idx = j * max_x + i;
     curandState local_rand_state = rand_state[pixel_idx];
-    Vec3 color(0, 0, 0);
+    Vec3 color(0.0f, 0.0f, 0.0f);
+
+    float inv_max_x = 1.0f / max_x;
+    float inv_max_y = 1.0f / max_y;
     for (int s = 0; s < num_samples; s++) {
-        float u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
-        float v = float(j + curand_uniform(&local_rand_state)) / float(max_y);
-        Ray r = (*camera)->get_ray(u, v, &local_rand_state);
-        color += get_color(r, world, &local_rand_state);
+        float u = float(i + curand_uniform(&local_rand_state)) * inv_max_x;
+        float v = float(j + curand_uniform(&local_rand_state)) * inv_max_y;
+        Ray r = camera_ptrs[0]->get_ray(u, v, &local_rand_state);
+        color += get_color(r, primitive_ptrs, num_primitives, &local_rand_state);
     }
     rand_state[pixel_idx] = local_rand_state;
 
     color /= num_samples;
-    color[0] = sqrt(color[0]);
-    color[1] = sqrt(color[1]);
-    color[2] = sqrt(color[2]);
+    color.sqrt_inplace();
     fb[pixel_idx] = color;
 }
 
 int main() {
-    const int WIDTH = 600;
-    const int HEIGHT = 600;
-    const int WIDTH_PER_BLOCK = 8;
-    const int HEIGHT_PER_BLOCK = 8;
-    const int NUM_SAMPLES = 100;
+    //
+    constexpr int WIDTH = 600;
+    constexpr int HEIGHT = 600;
+    constexpr int WIDTH_PER_BLOCK = 8;
+    constexpr int HEIGHT_PER_BLOCK = 8;
+    constexpr int NUM_SAMPLES = 100;
 
-    float aspect_ratio = WIDTH / HEIGHT;
+    constexpr float ASPECT_RATIO = float(WIDTH) / float(HEIGHT);
 
-    int num_pixels = WIDTH * HEIGHT;
-    size_t fb_size = num_pixels * sizeof(Vec3);
-    Vec3 *fb;
-    checkCudaErrors(cudaMallocManaged((void **)&fb, fb_size));
+    constexpr int NUM_PIXELS = WIDTH * HEIGHT;
+    Vec3 *d_fb;
+    checkCudaErrors(cudaMalloc(&d_fb, NUM_PIXELS*sizeof(Vec3)));
 
-    Primitive **d_list;
-    checkCudaErrors(cudaMalloc((void **)&d_list, 4*sizeof(Primitive*)));
-    Primitive **d_world;
-    checkCudaErrors(cudaMalloc((void **)&d_world, sizeof(Primitive*)));
-    Camera **d_camera;
-    checkCudaErrors(cudaMalloc((void **)&d_camera, sizeof(Camera*)));
-    create_world<<<1, 1>>>(d_list, d_world, d_camera, aspect_ratio);
+    constexpr int NUM_PRIMITIVES = 4;
+    Primitive **d_primitive_ptrs;
+    checkCudaErrors(cudaMalloc(&d_primitive_ptrs, NUM_PRIMITIVES*sizeof(Primitive*)));
+
+    Camera **d_camera_ptrs;
+    checkCudaErrors(cudaMalloc(&d_camera_ptrs, sizeof(Camera*)));
+
+    create_world<<<1, 1>>>(d_primitive_ptrs, d_camera_ptrs, ASPECT_RATIO);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
     curandState *d_rand_state;
-    checkCudaErrors(cudaMalloc((void **)&d_rand_state, num_pixels*sizeof(curandState)));
+    checkCudaErrors(cudaMalloc(&d_rand_state, NUM_PIXELS*sizeof(curandState)));
 
-    dim3 blocks((WIDTH + WIDTH_PER_BLOCK - 1) / WIDTH_PER_BLOCK,
-                (HEIGHT + HEIGHT_PER_BLOCK - 1) / HEIGHT_PER_BLOCK);
-    dim3 threads(WIDTH_PER_BLOCK, HEIGHT_PER_BLOCK);
+    constexpr dim3 BLOCKS_PER_GRID((WIDTH + WIDTH_PER_BLOCK - 1) / WIDTH_PER_BLOCK,
+                                   (HEIGHT + HEIGHT_PER_BLOCK - 1) / HEIGHT_PER_BLOCK);
+    constexpr dim3 THREADS_PER_BLOCK(WIDTH_PER_BLOCK, HEIGHT_PER_BLOCK);
 
-    render_init<<<blocks, threads>>>(WIDTH, HEIGHT, d_rand_state);
+    render_init<<<BLOCKS_PER_GRID, THREADS_PER_BLOCK>>>(WIDTH, HEIGHT, d_rand_state);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    render<<<blocks, threads>>>(fb, d_rand_state, NUM_SAMPLES,
-                                WIDTH, HEIGHT,
-                                d_world, d_camera);
+    render<<<BLOCKS_PER_GRID, THREADS_PER_BLOCK>>>(d_fb, d_rand_state, NUM_SAMPLES,
+                                                   WIDTH, HEIGHT,
+                                                   d_primitive_ptrs, NUM_PRIMITIVES,
+                                                   d_camera_ptrs);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
+
+    Vec3 *h_fb = new Vec3[NUM_PIXELS];
+    checkCudaErrors(cudaMemcpy(h_fb, d_fb, NUM_PIXELS*sizeof(Vec3), cudaMemcpyDeviceToHost));
 
     std::ofstream file("image.ppm");
     file << "P3\n" << WIDTH << ' ' << HEIGHT << "\n255\n";
     for (int j = HEIGHT - 1; j >= 0; j--) {
         for (int i = 0; i < WIDTH; i++) {
             size_t pixel_idx = j * WIDTH + i;
-            float r = fb[pixel_idx].x();
-            float g = fb[pixel_idx].y();
-            float b = fb[pixel_idx].z();
-            int ir = int(255.99 * r);
-            int ig = int(255.99 * g);
-            int ib = int(255.99 * b);
-            file << ir << " " << ig << " " << ib << "\n";
+            float r = h_fb[pixel_idx].x;
+            float g = h_fb[pixel_idx].y;
+            float b = h_fb[pixel_idx].z;
+            int ir = std::clamp(int(256.0f * r), 0, 255);
+            int ig = std::clamp(int(256.0f * g), 0, 255);
+            int ib = std::clamp(int(256.0f * b), 0, 255);
+            file << ir << ' ' << ig << ' ' << ib << "\n";
         }
     }
 
