@@ -1,5 +1,5 @@
-#ifndef RTCUDA_MATERIAL_H
-#define RTCUDA_MATERIAL_H
+#ifndef RTCUDA_MATERIAL_CUH
+#define RTCUDA_MATERIAL_CUH
 
 class Material {
 public:
@@ -106,4 +106,4 @@ __device__ bool Light::emit(Vec3 &emit_spectrum) const {
     return true;
 }
 
-#endif //RTCUDA_MATERIAL_H
+#endif //RTCUDA_MATERIAL_CUH

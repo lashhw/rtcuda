@@ -1,5 +1,5 @@
-#ifndef RTCUDA_VEC3_H
-#define RTCUDA_VEC3_H
+#ifndef RTCUDA_VEC3_CUH
+#define RTCUDA_VEC3_CUH
 
 struct Vec3 {
     __host__ __device__ Vec3() { }
@@ -131,4 +131,4 @@ __host__ __device__ void Vec3::sqrt_inplace() {
     z = sqrtf(z);
 }
 
-#endif //RTCUDA_VEC3_H
+#endif //RTCUDA_VEC3_CUH

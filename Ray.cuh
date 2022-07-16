@@ -1,5 +1,5 @@
-#ifndef RTCUDA_RAY_H
-#define RTCUDA_RAY_H
+#ifndef RTCUDA_RAY_CUH
+#define RTCUDA_RAY_CUH
 
 struct Ray {
     __device__ Ray() { }
@@ -16,4 +16,4 @@ struct Ray {
     float tmax;
 };
 
-#endif //RTCUDA_RAY_H
+#endif //RTCUDA_RAY_CUH

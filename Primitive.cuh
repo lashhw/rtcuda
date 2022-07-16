@@ -1,5 +1,5 @@
-#ifndef RTCUDA_PRIMITIVE_H
-#define RTCUDA_PRIMITIVE_H
+#ifndef RTCUDA_PRIMITIVE_CUH
+#define RTCUDA_PRIMITIVE_CUH
 
 struct Primitive {
     __device__ virtual bool hit(const Ray &ray, HitRecord &rec) const = 0;
@@ -82,4 +82,4 @@ __device__ bool Triangle::hit(const Ray& ray, HitRecord &rec) const {
     return false;
 }
 
-#endif //RTCUDA_PRIMITIVE_H
+#endif //RTCUDA_PRIMITIVE_CUH

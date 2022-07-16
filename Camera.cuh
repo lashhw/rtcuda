@@ -1,5 +1,5 @@
-#ifndef RTCUDA_CAMERA_H
-#define RTCUDA_CAMERA_H
+#ifndef RTCUDA_CAMERA_CUH
+#define RTCUDA_CAMERA_CUH
 
 class Camera {
 public:
@@ -39,4 +39,4 @@ public:
     float aperture_radius;
 };
 
-#endif //RTCUDA_CAMERA_H
+#endif //RTCUDA_CAMERA_CUH

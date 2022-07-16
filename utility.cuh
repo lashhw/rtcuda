@@ -1,5 +1,5 @@
-#ifndef RTCUDA_UTILITY_H
-#define RTCUDA_UTILITY_H
+#ifndef RTCUDA_UTILITY_CUH
+#define RTCUDA_UTILITY_CUH
 
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
 
@@ -35,4 +35,4 @@ int clamp(int value, int low, int high) {
     return value < low ? low : (value > high ? high : value);
 }
 
-#endif //RTCUDA_UTILITY_H
+#endif //RTCUDA_UTILITY_CUH

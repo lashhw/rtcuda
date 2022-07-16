@@ -1,5 +1,5 @@
-#ifndef RTCUDA_HITRECORD_H
-#define RTCUDA_HITRECORD_H
+#ifndef RTCUDA_HITRECORD_CUH
+#define RTCUDA_HITRECORD_CUH
 
 struct Material;  // forward declaration
 
@@ -10,4 +10,4 @@ struct HitRecord {
     Material *mat_ptr;
 };
 
-#endif //RTCUDA_HITRECORD_H
+#endif //RTCUDA_HITRECORD_CUH

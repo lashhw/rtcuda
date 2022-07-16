@@ -4,13 +4,13 @@
 #include <cfloat>
 #include <curand_kernel.h>
 
-#include "Vec3.h"
-#include "Ray.h"
-#include "utility.h"
-#include "HitRecord.h"
-#include "Material.h"
-#include "Primitive.h"
-#include "Camera.h"
+#include "Vec3.cuh"
+#include "Ray.cuh"
+#include "utility.cuh"
+#include "HitRecord.cuh"
+#include "Material.cuh"
+#include "Primitive.cuh"
+#include "Camera.cuh"
 
 template <int RECURSION_DEPTH = 10>
 __device__ Vec3 get_color(const Ray &ray, Primitive **primitive_ptrs, int num_primitives,
