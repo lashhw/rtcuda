@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(rtcuda CUDA)
 
-set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 14)
 
 add_executable(rtcuda main.cu Vec3.h Ray.h Primitive.h Camera.h HitRecord.h Material.h utility.h)
 

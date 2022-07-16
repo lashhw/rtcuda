@@ -5,6 +5,7 @@ class Material {
 public:
     __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
                                     Vec3 &attenuation, Ray &r_out) const = 0;
+    __device__ virtual bool emit(Vec3 &emit_spectrum) const = 0;
 };
 
 class Lambertian : public Material {
@@ -12,6 +13,7 @@ public:
     __device__ Lambertian(const Vec3 &albedo) : albedo(albedo) { }
     __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
                                     Vec3 &attenuation, Ray &r_out) const override;
+    __device__ virtual bool emit(Vec3 &emit_spectrum) const override { return false; };
 
     Vec3 albedo;
 };
@@ -21,6 +23,7 @@ public:
     __device__ Metal(const Vec3 &albedo, float fuzz) : albedo(albedo), fuzz(fuzz) { }
     __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
                                     Vec3 &attenuation, Ray &r_out) const override;
+    __device__ virtual bool emit(Vec3 &emit_spectrum) const override { return false; };
 
     Vec3 albedo;
     float fuzz;
@@ -31,8 +34,19 @@ public:
     __device__ Dielectric(float index_of_refraction) : index_of_refraction(index_of_refraction) { }
     __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
                                     Vec3 &attenuation, Ray &r_out) const override;
+    __device__ virtual bool emit(Vec3 &emit_spectrum) const override { return false; };
 
     float index_of_refraction;
+};
+
+class Light : public Material {
+public:
+    __device__ Light(const Vec3 &spectrum) : spectrum(spectrum) { }
+    __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
+                                    Vec3 &attenuation, Ray &r_out) const override { return false; }
+    __device__ virtual bool emit(Vec3 &emit_spectrum) const override;
+
+    Vec3 spectrum;
 };
 
 __device__ bool Lambertian::scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
@@ -84,6 +98,11 @@ __device__ bool Dielectric::scatter(const Ray &r_in, const HitRecord &rec, curan
 
     r_out = Ray(rec.p, unit_r_out_direction);
 
+    return true;
+}
+
+__device__ bool Light::emit(Vec3 &emit_spectrum) const {
+    emit_spectrum = spectrum;
     return true;
 }
 

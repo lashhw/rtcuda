@@ -1,7 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <cmath>
-#include <algorithm>
+#include <cfloat>
 #include <curand_kernel.h>
 
 #include "Vec3.h"
@@ -14,30 +14,36 @@
 
 template <int RECURSION_DEPTH = 10>
 __device__ Vec3 get_color(const Ray &ray, Primitive **primitive_ptrs, int num_primitives,
-                                          curandState *rand_state) {
+                          curandState *rand_state) {
     Ray cur_ray = ray;
     Vec3 cur_attenuation = Vec3(1.0f, 1.0f, 1.0f);
 
-    HitRecord tmp_rec;
+    HitRecord rec;
     Vec3 tmp_attenuation;
+
+    Vec3 accumulate_spectrum = Vec3(0.0f, 0.0f, 0.0f);
 
     for (int i = 0; i < RECURSION_DEPTH; i++) {
         bool hit_anything = false;
         for (int j = 0; j < num_primitives; j++) {
-            if (primitive_ptrs[j]->hit(cur_ray, tmp_rec)) {
+            if (primitive_ptrs[j]->hit(cur_ray, rec)) {
                 hit_anything = true;
-                cur_ray.tmax = tmp_rec.t;
+                cur_ray.tmax = rec.t;
             }
         }
 
         if (hit_anything) {
-            if (tmp_rec.mat_ptr->scatter(cur_ray, tmp_rec, rand_state, tmp_attenuation, cur_ray)) {
+            Vec3 emit_spectrum;
+            if(rec.mat_ptr->emit(emit_spectrum)) {
+                accumulate_spectrum += cur_attenuation * emit_spectrum;
+            }
+            if (rec.mat_ptr->scatter(cur_ray, rec, rand_state, tmp_attenuation, cur_ray)) {
                 cur_attenuation *= tmp_attenuation;
             } else {
-                return Vec3(0.0f, 0.0f, 0.0f);
+                return accumulate_spectrum;
             }
         } else {
-            return cur_attenuation;
+            return accumulate_spectrum + cur_attenuation * Vec3(0.0f, 0.0f, 0.0f);
         }
     }
 
@@ -52,30 +58,35 @@ __global__ void create_world(Primitive **primitive_ptrs, Camera **camera_ptrs, f
         Material *mirror = new Metal(Vec3(0.8f, 0.8f, 0.9f), 0.0f);
         Material *gold = new Metal(Vec3(0.9f, 0.73f, 0.05f), 1.0f);
         Material *glass = new Dielectric(1.5f);
+        Material *light = new Light(Vec3(15.0f, 15.0f, 15.0f));
 
         primitive_ptrs[0] = new Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f),
                                          red);
-        primitive_ptrs[1] = new Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f,  0.0f), Vec3(0.0f, 1.0f, -1.0f),
+        primitive_ptrs[1] = new Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f),
                                          red);
         primitive_ptrs[2] = new Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f),
                                          green);
-        primitive_ptrs[3] = new Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f,  0.0f), Vec3(1.0f, 1.0f, -1.0f),
+        primitive_ptrs[3] = new Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f),
                                          green);
-        primitive_ptrs[4] = new Triangle(Vec3(0.0f, 0.0f,  0.0f), Vec3(1.0f, 0.0f,  0.0f), Vec3(1.0f, 0.0f, -1.0f),
+        primitive_ptrs[4] = new Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f),
                                          white);
-        primitive_ptrs[5] = new Triangle(Vec3(0.0f, 0.0f,  0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f),
+        primitive_ptrs[5] = new Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f),
                                          white);
-        primitive_ptrs[6] = new Triangle(Vec3(0.0f, 1.0f,  0.0f), Vec3(1.0f, 1.0f,  0.0f), Vec3(1.0f, 1.0f, -1.0f),
+        primitive_ptrs[6] = new Triangle(Vec3(0.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f),
                                          white);
-        primitive_ptrs[7] = new Triangle(Vec3(0.0f, 1.0f,  0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f),
+        primitive_ptrs[7] = new Triangle(Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f),
                                          white);
         primitive_ptrs[8] = new Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f),
                                          white);
         primitive_ptrs[9] = new Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f),
                                          white);
-        primitive_ptrs[10] = new Sphere(Vec3(0.75f, 0.15f, -0.55f), 0.15f, mirror);
-        primitive_ptrs[11] = new Sphere(Vec3(0.25f, 0.15f, -0.35f), 0.15f, glass);
-        primitive_ptrs[12] = new Sphere(Vec3(0.55f, 0.10f, -0.15f), 0.10f, gold);
+        primitive_ptrs[10] = new Triangle(Vec3(0.4f, 0.99f, -0.4f), Vec3(0.6f, 0.99f, -0.4f), Vec3(0.6f, 0.99f, -0.6f),
+                                          light);
+        primitive_ptrs[11] = new Triangle(Vec3(0.4f, 0.99f, -0.4f), Vec3(0.4f, 0.99f, -0.6f), Vec3(0.6f, 0.99f, -0.6f),
+                                          light);
+        primitive_ptrs[12] = new Sphere(Vec3(0.75f, 0.15f, -0.55f), 0.15f, mirror);
+        primitive_ptrs[13] = new Sphere(Vec3(0.25f, 0.15f, -0.35f), 0.15f, glass);
+        primitive_ptrs[14] = new Sphere(Vec3(0.55f, 0.10f, -0.15f), 0.10f, gold);
         camera_ptrs[0] = new Camera(Vec3(0.5f, 0.5f, 1.5f),
                                     Vec3(0.5f, 0.5f, 0.0f),
                                     Vec3(0.0f, 1.0f, 0.0f),
@@ -126,7 +137,7 @@ int main() {
     constexpr int HEIGHT = 600;
     constexpr int WIDTH_PER_BLOCK = 8;
     constexpr int HEIGHT_PER_BLOCK = 8;
-    constexpr int NUM_SAMPLES = 100;
+    constexpr int NUM_SAMPLES = 1000;
 
     constexpr float ASPECT_RATIO = float(WIDTH) / float(HEIGHT);
 
@@ -134,7 +145,7 @@ int main() {
     Vec3 *d_fb;
     checkCudaErrors(cudaMalloc(&d_fb, NUM_PIXELS*sizeof(Vec3)));
 
-    constexpr int NUM_PRIMITIVES = 13;
+    constexpr int NUM_PRIMITIVES = 15;
     Primitive **d_primitive_ptrs;
     checkCudaErrors(cudaMalloc(&d_primitive_ptrs, NUM_PRIMITIVES*sizeof(Primitive*)));
 
@@ -174,9 +185,9 @@ int main() {
             float r = h_fb[pixel_idx].x;
             float g = h_fb[pixel_idx].y;
             float b = h_fb[pixel_idx].z;
-            int ir = std::clamp(int(256.0f * r), 0, 255);
-            int ig = std::clamp(int(256.0f * g), 0, 255);
-            int ib = std::clamp(int(256.0f * b), 0, 255);
+            int ir = clamp(int(256.0f * r), 0, 255);
+            int ig = clamp(int(256.0f * g), 0, 255);
+            int ib = clamp(int(256.0f * b), 0, 255);
             file << ir << ' ' << ig << ' ' << ib << "\n";
         }
     }

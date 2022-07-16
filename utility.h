@@ -31,4 +31,8 @@ __device__ void random_in_unit_disk(curandState *local_rand_state, float &x, flo
     } while (x*x+y*y >= 1.0f);
 }
 
+int clamp(int value, int low, int high) {
+    return value < low ? low : (value > high ? high : value);
+}
+
 #endif //RTCUDA_UTILITY_H
