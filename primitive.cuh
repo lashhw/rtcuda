@@ -9,6 +9,7 @@ struct Sphere : public Primitive {
     __device__ Sphere() { }
     __device__ Sphere(const Vec3 &center, float radius, Material *mat_ptr)
         : center(center), radius(radius), mat_ptr(mat_ptr) { }
+
     __device__ virtual bool hit(const Ray &ray, HitRecord &rec) const override;
 
     Vec3 center;
@@ -17,9 +18,14 @@ struct Sphere : public Primitive {
 };
 
 struct Triangle : public Primitive {
-    __device__ Triangle() { }
-    __device__ Triangle(const Vec3 &p0, const Vec3 &p1, const Vec3 &p2, Material *mat_ptr)
+    __host__ __device__ Triangle() { }
+    __host__ __device__ Triangle(const Vec3 &p0, const Vec3 &p1, const Vec3 &p2, Material *mat_ptr)
         : p0(p0), e1(p0-p1), e2(p2-p0), n(cross(e1, e2)), mat_ptr(mat_ptr) { }
+
+    __device__ Vec3 p1() const { return p0 - e1; }
+    __device__ Vec3 p2() const { return p0 + e2; }
+    __device__ Vec3 center() const { return (p0 + p1() + p2()) * (1.f / 3.f); }
+    __device__ BoundingBox bounding_box() const;
     __device__ virtual bool hit(const Ray &ray, HitRecord &rec) const override;
 
     Vec3 p0, e1, e2, n;
@@ -57,6 +63,23 @@ __device__ bool Sphere::hit(const Ray& ray, HitRecord &rec) const {
     }
 
     return false;
+}
+
+__device__ BoundingBox Triangle::bounding_box() const {
+    BoundingBox bbox;
+
+    Vec3 p1_ = p1();
+    Vec3 p2_ = p2();
+
+    bbox.bounds[0] = fminf(p0.x, fminf(p1_.x, p2_.x));
+    bbox.bounds[2] = fminf(p0.y, fminf(p1_.y, p2_.y));
+    bbox.bounds[4] = fminf(p0.z, fminf(p1_.z, p2_.z));
+
+    bbox.bounds[1] = fmaxf(p0.x, fmaxf(p1_.x, p2_.x));
+    bbox.bounds[3] = fmaxf(p0.y, fmaxf(p1_.y, p2_.y));
+    bbox.bounds[5] = fmaxf(p0.z, fmaxf(p1_.z, p2_.z));
+
+    return bbox;
 }
 
 __device__ bool Triangle::hit(const Ray& ray, HitRecord &rec) const {

@@ -52,7 +52,7 @@ __host__ __device__ Vec3 operator/(const Vec3 &v, float t) {
     return Vec3(v.x * inv_t, v.y * inv_t, v.z * inv_t);
 }
 
-__host__ __device__ float dot (const Vec3 &v1, const Vec3 &v2) {
+__host__ __device__ float dot(const Vec3 &v1, const Vec3 &v2) {
     return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
 }
 

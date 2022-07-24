@@ -1,20 +1,37 @@
 #include <iostream>
 #include <fstream>
 #include <cmath>
+#include <vector>
 #include <cfloat>
+#include <array>
+#include <algorithm>
+#include <stack>
+
 #include <curand_kernel.h>
+#include <cub/cub.cuh>
+#include <thrust/scan.h>
+#include <thrust/partition.h>
+#include <thrust/device_ptr.h>
+#include <thrust/iterator/permutation_iterator.h>
 
 #include "vec3.cuh"
+#include "matrix4x4.hpp"
+#include "transform.hpp"
 #include "ray.cuh"
+#include "bounding_box.cuh"
+#include "aabb_intersector.cuh"
 #include "utility.cuh"
 #include "hit_record.cuh"
 #include "material.cuh"
 #include "primitive.cuh"
+#include "bvh.cuh"
 #include "camera.cuh"
+#include "happly.h"
 
-template <int RECURSION_DEPTH = 10>
 __device__ Vec3 get_color(const Ray &ray, Primitive **primitive_ptrs, int num_primitives,
                           curandState *rand_state) {
+    static constexpr int RECURSION_DEPTH = 10;
+
     Ray cur_ray = ray;
     Vec3 cur_attenuation = Vec3(1.0f, 1.0f, 1.0f);
 
@@ -87,6 +104,7 @@ __global__ void create_world(Primitive **primitive_ptrs, Camera **camera_ptrs, f
         primitive_ptrs[12] = new Sphere(Vec3(0.75f, 0.15f, -0.55f), 0.15f, mirror);
         primitive_ptrs[13] = new Sphere(Vec3(0.25f, 0.15f, -0.35f), 0.15f, glass);
         primitive_ptrs[14] = new Sphere(Vec3(0.55f, 0.10f, -0.15f), 0.10f, gold);
+
         camera_ptrs[0] = new Camera(Vec3(0.5f, 0.5f, 1.5f),
                                     Vec3(0.5f, 0.5f, 0.0f),
                                     Vec3(0.0f, 1.0f, 0.0f),
@@ -132,50 +150,84 @@ __global__ void render(Vec3 *fb, curandState *rand_state, int num_samples,
 }
 
 int main() {
-    //
+    happly::PLYData ply_in("../bun_zipper.ply");
+    std::vector<std::array<double, 3>> v_pos = ply_in.getVertexPositions();
+    std::vector<std::vector<size_t>> f_index = ply_in.getFaceIndices<size_t>();
+    int num_primitives = f_index.size();
+
+    Transform transform(Matrix4x4::Translate(0.02f, -0.1f, 0.f));
+    transform.composite(Matrix4x4::Rotate(0.f, 1.f, 0.f, 0.1f));
+    for (auto &v : v_pos) transform.apply(v);
+
+    Triangle *h_primitives = new Triangle[num_primitives];
+    for (int i = 0; i < f_index.size(); i++) {
+        const std::vector<size_t> &face = f_index[i];
+        h_primitives[i] = Triangle(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
+                                   Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
+                                   Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]),
+                                   NULL);
+    }
+
+    /*
+    Triangle *h_primitives = new Triangle[3];
+    h_primitives[0] = Triangle(Vec3(2.f, -4.f, 1.f), Vec3(1.f, -3.f, -1.f), Vec3(4.f, -4.f, 0.f), NULL);
+    h_primitives[1] = Triangle(Vec3(0.f, 0.f, 0.f), Vec3(1.f, 2.f, 3.f), Vec3(0.f, 1.f, 2.f), NULL);
+    h_primitives[2] = Triangle(Vec3(2.f, 1.f, 0.f), Vec3(0.f, 2.f, 1.f), Vec3(2.f, 4.f, 1.f), NULL);
+    int num_primitives = 3;
+     */
+
+    Triangle *d_primitives;
+    CHECK_CUDA(cudaMalloc(&d_primitives, num_primitives * sizeof(Triangle)));
+    CHECK_CUDA(cudaMemcpy(d_primitives, h_primitives, num_primitives * sizeof(Triangle), cudaMemcpyHostToDevice));
+
+    Bvh bvh(num_primitives, d_primitives);
+}
+
+/*
+int main() {
     constexpr int WIDTH = 600;
     constexpr int HEIGHT = 600;
     constexpr int WIDTH_PER_BLOCK = 8;
     constexpr int HEIGHT_PER_BLOCK = 8;
-    constexpr int NUM_SAMPLES = 1000;
+    constexpr int NUM_SAMPLES = 10;
 
     constexpr float ASPECT_RATIO = float(WIDTH) / float(HEIGHT);
 
     constexpr int NUM_PIXELS = WIDTH * HEIGHT;
     Vec3 *d_fb;
-    checkCudaErrors(cudaMalloc(&d_fb, NUM_PIXELS*sizeof(Vec3)));
+    CHECK_CUDA(cudaMalloc(&d_fb, NUM_PIXELS * sizeof(Vec3)));
 
     constexpr int NUM_PRIMITIVES = 15;
     Primitive **d_primitive_ptrs;
-    checkCudaErrors(cudaMalloc(&d_primitive_ptrs, NUM_PRIMITIVES*sizeof(Primitive*)));
+    CHECK_CUDA(cudaMalloc(&d_primitive_ptrs, NUM_PRIMITIVES * sizeof(Primitive*)));
 
     Camera **d_camera_ptrs;
-    checkCudaErrors(cudaMalloc(&d_camera_ptrs, sizeof(Camera*)));
+    CHECK_CUDA(cudaMalloc(&d_camera_ptrs, sizeof(Camera*)));
 
     create_world<<<1, 1>>>(d_primitive_ptrs, d_camera_ptrs, ASPECT_RATIO);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
 
     curandState *d_rand_state;
-    checkCudaErrors(cudaMalloc(&d_rand_state, NUM_PIXELS*sizeof(curandState)));
+    CHECK_CUDA(cudaMalloc(&d_rand_state, NUM_PIXELS * sizeof(curandState)));
 
     constexpr dim3 BLOCKS_PER_GRID((WIDTH + WIDTH_PER_BLOCK - 1) / WIDTH_PER_BLOCK,
                                    (HEIGHT + HEIGHT_PER_BLOCK - 1) / HEIGHT_PER_BLOCK);
     constexpr dim3 THREADS_PER_BLOCK(WIDTH_PER_BLOCK, HEIGHT_PER_BLOCK);
 
     render_init<<<BLOCKS_PER_GRID, THREADS_PER_BLOCK>>>(WIDTH, HEIGHT, d_rand_state);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
 
     render<<<BLOCKS_PER_GRID, THREADS_PER_BLOCK>>>(d_fb, d_rand_state, NUM_SAMPLES,
                                                    WIDTH, HEIGHT,
                                                    d_primitive_ptrs, NUM_PRIMITIVES,
                                                    d_camera_ptrs);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
 
     Vec3 *h_fb = new Vec3[NUM_PIXELS];
-    checkCudaErrors(cudaMemcpy(h_fb, d_fb, NUM_PIXELS*sizeof(Vec3), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_fb, d_fb, NUM_PIXELS * sizeof(Vec3), cudaMemcpyDeviceToHost));
 
     std::ofstream file("image.ppm");
     file << "P3\n" << WIDTH << ' ' << HEIGHT << "\n255\n";
@@ -192,6 +244,7 @@ int main() {
         }
     }
 
-    checkCudaErrors(cudaDeviceReset());
+    CHECK_CUDA(cudaDeviceReset());
     return 0;
 }
+ */
