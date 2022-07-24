@@ -22,10 +22,10 @@ struct Triangle : public Primitive {
     __host__ __device__ Triangle(const Vec3 &p0, const Vec3 &p1, const Vec3 &p2, Material *mat_ptr)
         : p0(p0), e1(p0-p1), e2(p2-p0), n(cross(e1, e2)), mat_ptr(mat_ptr) { }
 
-    __device__ Vec3 p1() const { return p0 - e1; }
-    __device__ Vec3 p2() const { return p0 + e2; }
-    __device__ Vec3 center() const { return (p0 + p1() + p2()) * (1.f / 3.f); }
-    __device__ BoundingBox bounding_box() const;
+    __host__ __device__ Vec3 p1() const { return p0 - e1; }
+    __host__ __device__ Vec3 p2() const { return p0 + e2; }
+    __host__ __device__ Vec3 center() const { return (p0 + p1() + p2()) * (1.f / 3.f); }
+    __host__ __device__ BoundingBox bounding_box() const;
     __device__ virtual bool hit(const Ray &ray, HitRecord &rec) const override;
 
     Vec3 p0, e1, e2, n;
@@ -65,7 +65,7 @@ __device__ bool Sphere::hit(const Ray& ray, HitRecord &rec) const {
     return false;
 }
 
-__device__ BoundingBox Triangle::bounding_box() const {
+__host__ __device__ BoundingBox Triangle::bounding_box() const {
     BoundingBox bbox;
 
     Vec3 p1_ = p1();

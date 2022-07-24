@@ -13,7 +13,7 @@ struct Bvh {
         };
     };
 
-    Bvh(int num_primitives, Triangle *d_primitives);
+    Bvh(const std::vector<Triangle> &primitives);
 
     static constexpr int MAX_DEPTH = 64;
 
@@ -23,197 +23,53 @@ struct Bvh {
     Node *d_nodes;
 };
 
-struct MergeBoundingBox {
-    __device__ BoundingBox operator()(const BoundingBox &bbox1, const BoundingBox &bbox2) const {
-        return BoundingBox::merge(bbox1, bbox2);
-    }
-};
-
-struct MarksPredicate {
-    __device__ bool operator()(const int &x) const {
-        return d_marks[x];
-    }
-    const bool *d_marks;
-};
-
-__global__ void fill_bboxes_and_centers(const Triangle *d_primitives, int num_primitives,
-                                        BoundingBox *d_bboxes, Vec3 *d_centers) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (primitive_index < num_primitives) {
-        d_bboxes[primitive_index] = d_primitives[primitive_index].bounding_box();
-        d_centers[primitive_index] = d_primitives[primitive_index].center();
-    }
-}
-
-__global__ void fill_keys_by_x(const Vec3 *d_centers, int num_primitives, float *d_keys) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (primitive_index < num_primitives)
-        d_keys[primitive_index] = d_centers[primitive_index].x;
-}
-
-__global__ void fill_keys_by_y(const Vec3 *d_centers, int num_primitives, float *d_keys) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (primitive_index < num_primitives)
-        d_keys[primitive_index] = d_centers[primitive_index].y;
-}
-
-__global__ void fill_keys_by_z(const Vec3 *d_centers, int num_primitives, float *d_keys) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (primitive_index < num_primitives)
-        d_keys[primitive_index] = d_centers[primitive_index].z;
-}
-
-__global__ void make_leaf(int node_index, int curr_num_primitives, int begin, Bvh::Node *d_nodes) {
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
-        d_nodes[node_index].num_primitives = curr_num_primitives;
-        d_nodes[node_index].first_primitive_index = begin;
-    }
-}
-
-__global__ void make_internal_node(int node_index, int left_node_index, Bvh::Node *d_nodes) {
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
-        d_nodes[node_index].num_primitives = 0;
-        d_nodes[node_index].left_node_index = left_node_index;
-    }
-}
-
-__global__ void fill_costs(const BoundingBox *d_bboxes_tmp, int begin, int end, float *d_costs) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x + begin;
-    if (primitive_index < end - 1)
-        d_costs[primitive_index] = d_bboxes_tmp[primitive_index].half_area() * (primitive_index + 1 - begin);
-}
-
-__global__ void update_costs(const BoundingBox *d_bboxes_tmp, int begin, int end, float *d_costs) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x + begin;
-    if (primitive_index < end - 1)
-        d_costs[primitive_index] += d_bboxes_tmp[primitive_index + 1].half_area() * (end - primitive_index - 1);
-}
-
-__global__ void fill_curr_half_area(const Bvh::Node *d_nodes, int node_index, float *d_curr_half_area) {
-    if (blockIdx.x == 0 && threadIdx.x == 0)
-        *d_curr_half_area = d_nodes[node_index].bbox.half_area();
-}
-
-__global__ void fill_bboxes_tmp(const BoundingBox *d_bboxes, const int *d_sorted_references_best_axis,
-                                int begin, int end, BoundingBox *d_bboxes_tmp) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x + begin;
-    if (primitive_index < end)
-        d_bboxes_tmp[primitive_index] = d_bboxes[d_sorted_references_best_axis[primitive_index]];
-}
-
-__global__ void fill_marks_left(const int *d_sorted_references_best_axis, int begin, int best_split_index,
-                                bool *d_marks) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x + begin;
-    if (primitive_index < best_split_index)
-        d_marks[d_sorted_references_best_axis[primitive_index]] = true;
-}
-
-__global__ void fill_marks_right(const int *d_sorted_references_best_axis, int best_split_index, int end,
-                                 bool *d_marks) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x + best_split_index;
-    if (primitive_index < end)
-        d_marks[d_sorted_references_best_axis[primitive_index]] = false;
-}
-
-__global__ void rearrange_primitives(const int *d_sorted_references_0, const Triangle *d_primitives_tmp,
-                                     int num_primitives, Triangle *d_primitives) {
-    int primitive_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (primitive_index < num_primitives) {
-        d_primitives[primitive_index] = d_primitives_tmp[d_sorted_references_0[primitive_index]];
-    }
-}
-
-// TODO: add CHECK_CUDA for cub
-Bvh::Bvh(int num_primitives, Triangle *d_primitives) : num_primitives(num_primitives), d_primitives(d_primitives) {
-    // TODO: try different parameters
-    // kernel execution configuration
-    const int THREADS_PER_BLOCK = 256;
-    auto blocks_per_grid = [](int num_threads) -> int { return (num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK; };
-
+Bvh::Bvh(const std::vector<Triangle> &primitives)
+    : num_primitives(primitives.size()) {
     // allocate temporary memory for BVH construction
-    BoundingBox *d_bboxes;
-    BoundingBox *d_bboxes_tmp;
-    Vec3 *d_centers;
-    float *d_costs;
-    float *d_unsorted_keys;
-    float *d_sorted_keys;
-    int *d_unsorted_references;
-    int *d_sorted_references[3];
-    bool *d_marks;
-    Triangle *d_primitives_tmp;
-    void *d_temp_storage;
-    CHECK_CUDA(cudaMalloc(&d_bboxes, num_primitives * sizeof(BoundingBox)));
-    CHECK_CUDA(cudaMalloc(&d_bboxes_tmp, num_primitives * sizeof(BoundingBox)));
-    CHECK_CUDA(cudaMalloc(&d_centers, num_primitives * sizeof(Vec3)));
-    CHECK_CUDA(cudaMalloc(&d_costs, num_primitives * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_unsorted_keys, num_primitives * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_sorted_keys, num_primitives * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_unsorted_references, num_primitives * sizeof(int)));
-    CHECK_CUDA(cudaMalloc(&d_sorted_references[0], num_primitives * sizeof(int)));
-    CHECK_CUDA(cudaMalloc(&d_sorted_references[1], num_primitives * sizeof(int)));
-    CHECK_CUDA(cudaMalloc(&d_sorted_references[2], num_primitives * sizeof(int)));
-    CHECK_CUDA(cudaMalloc(&d_marks, num_primitives * sizeof(bool)));
-    CHECK_CUDA(cudaMalloc(&d_primitives_tmp, num_primitives * sizeof(Triangle)));
+    std::cout << "Allocating temporary memory... " << std::flush;
+    auto h_bboxes = std::make_unique<BoundingBox[]>(num_primitives);
+    auto h_centers = std::make_unique<Vec3[]>(num_primitives);
+    auto h_costs = std::make_unique<float[]>(num_primitives);
+    auto h_marks = std::make_unique<bool[]>(num_primitives);
+    auto h_sorted_references_data = std::make_unique<int[]>(3 * num_primitives);
+    int *h_sorted_references[3] = { h_sorted_references_data.get(),
+                                    h_sorted_references_data.get() + num_primitives,
+                                    h_sorted_references_data.get() + 2 * num_primitives };
+    auto h_nodes = std::make_unique<Node[]>(2 * num_primitives);
+    auto h_primitives_tmp = std::make_unique<Triangle[]>(num_primitives);
+    std::cout << "done" << std::endl;
 
-    // allocate memory for BVH d_nodes
+    // initially, there is only one node
     num_nodes = 1;
-    CHECK_CUDA(cudaMalloc(&d_nodes, 2 * num_primitives * sizeof(Node)));  // TODO: free unused node after construction
 
-    // fill d_bboxes and d_centers
-    fill_bboxes_and_centers<<<blocks_per_grid(num_primitives), THREADS_PER_BLOCK>>>(d_primitives, num_primitives,
-                                                                                    d_bboxes, d_centers);
-    CHECK_CUDA(cudaGetLastError());
+    // initialize h_bboxes, h_centers, and h_nodes[0].bbox
+    h_nodes[0].bbox.reset();
+    for (int i = 0; i < num_primitives; i++) {
+        h_bboxes[i] = primitives[i].bounding_box();
+        h_nodes[0].bbox.extend(h_bboxes[i]);
+        h_centers[i] = primitives[i].center();
+    }
 
-    // fill d_nodes[0].bbox by merging all d_bboxes
-    d_temp_storage = NULL;
-    size_t temp_storage_bytes;
-    MergeBoundingBox merge_bounding_box;
-    CHECK_CUDA(cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_bboxes, &d_nodes[0].bbox,
-                                         num_primitives, merge_bounding_box, BoundingBox::Empty()));
-    CHECK_CUDA(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-    CHECK_CUDA(cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_bboxes, &d_nodes[0].bbox,
-                                         num_primitives, merge_bounding_box, BoundingBox::Empty()));
+    // TODO: change to radix sort (maybe on GPU?)
+    std::cout << "Sorting primitives... " << std::flush;
+    // sort on x-coordinate
+    std::iota(h_sorted_references[0], h_sorted_references[0] + num_primitives, 0);
+    std::sort(h_sorted_references[0], h_sorted_references[0] + num_primitives,
+              [&](int i, int j) { return h_centers[i].x < h_centers[j].x; });
 
-    thrust::device_ptr<int> unsorted_references_dev_ptr(d_unsorted_references);
+    // sort on y-coordinate
+    std::iota(h_sorted_references[1], h_sorted_references[1] + num_primitives, 0);
+    std::sort(h_sorted_references[1], h_sorted_references[1] + num_primitives,
+              [&](int i, int j) { return h_centers[i].y < h_centers[j].y; });
 
-    // fill d_sorted_references[0]
-    thrust::sequence(unsorted_references_dev_ptr, unsorted_references_dev_ptr + num_primitives);
-    fill_keys_by_x<<<blocks_per_grid(num_primitives), THREADS_PER_BLOCK>>>(d_centers, num_primitives, d_unsorted_keys);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaFree(d_temp_storage));
-    d_temp_storage = NULL;
-    CHECK_CUDA(cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes, d_unsorted_keys, d_sorted_keys,
-                                               d_unsorted_references, d_sorted_references[0], num_primitives));
-    CHECK_CUDA(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-    CHECK_CUDA(cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes, d_unsorted_keys, d_sorted_keys,
-                                               d_unsorted_references, d_sorted_references[0], num_primitives));
+    // sort on z-coordinate
+    std::iota(h_sorted_references[2], h_sorted_references[2] + num_primitives, 0);
+    std::sort(h_sorted_references[2], h_sorted_references[2] + num_primitives,
+              [&](int i, int j) { return h_centers[i].z < h_centers[j].z; });
+    std::cout << "done" << std::endl;
 
-    // fill d_sorted_references[1]
-    thrust::sequence(unsorted_references_dev_ptr, unsorted_references_dev_ptr + num_primitives);
-    fill_keys_by_y<<<blocks_per_grid(num_primitives), THREADS_PER_BLOCK>>>(d_centers, num_primitives, d_unsorted_keys);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaFree(d_temp_storage));
-    d_temp_storage = NULL;
-    CHECK_CUDA(cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes, d_unsorted_keys, d_sorted_keys,
-                                               d_unsorted_references, d_sorted_references[1], num_primitives));
-    CHECK_CUDA(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-    CHECK_CUDA(cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes, d_unsorted_keys, d_sorted_keys,
-                                               d_unsorted_references, d_sorted_references[1], num_primitives));
-
-    // fill d_sorted_references[2]
-    thrust::sequence(unsorted_references_dev_ptr, unsorted_references_dev_ptr + num_primitives);
-    fill_keys_by_z<<<blocks_per_grid(num_primitives), THREADS_PER_BLOCK>>>(d_centers, num_primitives, d_unsorted_keys);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaFree(d_temp_storage));
-    d_temp_storage = NULL;
-    CHECK_CUDA(cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes, d_unsorted_keys, d_sorted_keys,
-                                               d_unsorted_references, d_sorted_references[2], num_primitives));
-    CHECK_CUDA(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-    CHECK_CUDA(cub::DeviceRadixSort::SortPairs(d_temp_storage, temp_storage_bytes, d_unsorted_keys, d_sorted_keys,
-                                               d_unsorted_references, d_sorted_references[2], num_primitives));
-
-    // declare stack used for constructing BVH
-    std::stack<std::array<int, 4>> stack;
+    // initialize stack for BVH construction
+    std::stack<std::array<int, 4>> stack;  // node_index, begin, end, depth
     int node_index = 0;
     int begin = 0;
     int end = num_primitives;
@@ -228,13 +84,16 @@ Bvh::Bvh(int num_primitives, Triangle *d_primitives) : num_primitives(num_primit
         return true;
     };
 
-    // recursively build BVH (recursion is implemented by stack)
+    // recursion step for BVH construction (implemented by stack)
+    std::cout << "Constructing BVH... " << std::flush;
     while (true) {
+        Node &curr_node = h_nodes[node_index];
         int curr_num_primitives = end - begin;
 
+        // this node should be a leaf node
         if (curr_num_primitives <= 1 || depth >= MAX_DEPTH) {
-            make_leaf<<<1, 1>>>(node_index, curr_num_primitives, begin, d_nodes);
-            CHECK_CUDA(cudaGetLastError());
+            curr_node.num_primitives = curr_num_primitives;
+            curr_node.first_primitive_index = begin;
             if (check_and_update_and_pop_stack()) continue;
             else break;
         }
@@ -243,108 +102,69 @@ Bvh::Bvh(int num_primitives, Triangle *d_primitives) : num_primitives(num_primit
         int best_axis = -1;
         int best_split_index = -1;
 
-        thrust::device_ptr<BoundingBox> bboxes_dev_ptr(d_bboxes);
-        thrust::device_ptr<BoundingBox> bboxes_tmp_dev_ptr(d_bboxes_tmp);
-        thrust::reverse_iterator<thrust::device_ptr<BoundingBox>> bboxes_tmp_rev_iter(bboxes_tmp_dev_ptr + end);
+        // find best split axis and split index
         for (int axis = 0; axis < 3; axis++) {
-            thrust::device_ptr<int> sorted_references_axis_dev_ptr(d_sorted_references[axis]);
-            thrust::reverse_iterator<thrust::device_ptr<int>> sorted_references_axis_rev_iter(sorted_references_axis_dev_ptr + end);
+            BoundingBox tmp_bbox = BoundingBox::Empty();
+            for (int i = end - 1; i > begin; i--) {
+                tmp_bbox.extend(h_bboxes[h_sorted_references[axis][i]]);
+                h_costs[i] = tmp_bbox.half_area() * (end - i);
+            }
 
-            thrust::inclusive_scan(thrust::make_permutation_iterator(bboxes_dev_ptr, sorted_references_axis_dev_ptr + begin),
-                                   thrust::make_permutation_iterator(bboxes_dev_ptr, sorted_references_axis_dev_ptr + end - 1),
-                                   bboxes_tmp_dev_ptr + begin,
-                                   merge_bounding_box);
-            fill_costs<<<blocks_per_grid(curr_num_primitives - 1), THREADS_PER_BLOCK>>>(d_bboxes_tmp, begin, end, d_costs);
-            CHECK_CUDA(cudaGetLastError());
-
-            thrust::inclusive_scan(thrust::make_permutation_iterator(bboxes_dev_ptr, sorted_references_axis_rev_iter),
-                                   thrust::make_permutation_iterator(bboxes_dev_ptr, sorted_references_axis_rev_iter + curr_num_primitives - 1),
-                                   bboxes_tmp_rev_iter,
-                                   merge_bounding_box);
-            update_costs<<<blocks_per_grid(curr_num_primitives - 1), THREADS_PER_BLOCK>>>(d_bboxes_tmp, begin, end, d_costs);
-            CHECK_CUDA(cudaGetLastError());
-
-            CHECK_CUDA(cudaFree(d_temp_storage));
-            d_temp_storage = NULL;
-            cub::KeyValuePair<int, float> *d_min_pair;
-            CHECK_CUDA(cudaMalloc(&d_min_pair, sizeof(cub::KeyValuePair<int, float>)));
-            CHECK_CUDA(cub::DeviceReduce::ArgMin(d_temp_storage, temp_storage_bytes, d_costs + begin, d_min_pair, curr_num_primitives - 1));
-            CHECK_CUDA(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-            CHECK_CUDA(cub::DeviceReduce::ArgMin(d_temp_storage, temp_storage_bytes, d_costs + begin, d_min_pair, curr_num_primitives - 1));
-
-            cub::KeyValuePair<int, float> min_pair;
-            CHECK_CUDA(cudaMemcpy(&min_pair, d_min_pair, sizeof(cub::KeyValuePair<int, float>), cudaMemcpyDeviceToHost));
-
-            if (min_pair.value < best_cost) {
-                best_cost = min_pair.value;
-                best_axis = axis;
-                best_split_index = begin + min_pair.key + 1;
+            tmp_bbox.reset();
+            for (int i = begin; i < end - 1; i++) {
+                tmp_bbox.extend(h_bboxes[h_sorted_references[axis][i]]);
+                float cost = tmp_bbox.half_area() * (i + 1 - begin) + h_costs[i + 1];
+                if (cost < best_cost) {
+                    best_cost = cost;
+                    best_axis = axis;
+                    best_split_index = i + 1;
+                }
             }
         }
-        assert(best_axis != -1 && best_split_index != -1);
 
-        float curr_half_area;
-        fill_curr_half_area<<<1, 1>>>(d_nodes, node_index, &d_costs[0]);
-        CHECK_CUDA(cudaGetLastError());
-        CHECK_CUDA(cudaMemcpy(&curr_half_area, &d_costs[0], sizeof(float), cudaMemcpyDeviceToHost));
-        float max_split_cost = curr_half_area * (curr_num_primitives - 1);
-
+        // if best_cost >= max_split_cost, this node should be a leaf node
+        float max_split_cost = curr_node.bbox.half_area() * (curr_num_primitives - 1);
         if (best_cost >= max_split_cost) {
-            make_leaf<<<1, 1>>>(node_index, curr_num_primitives, begin, d_nodes);
-            CHECK_CUDA(cudaGetLastError());
+            curr_node.num_primitives = curr_num_primitives;
+            curr_node.first_primitive_index = begin;
             if (check_and_update_and_pop_stack()) continue;
             else break;
         }
 
+        // set bbox of left and right nodes
         int left_node_index = num_nodes;
-        int right_node_index = left_node_index + 1;
+        int right_node_index = num_nodes + 1;
+        Node &left_node = h_nodes[left_node_index];
+        Node &right_node = h_nodes[right_node_index];
+        left_node.bbox.reset();
+        right_node.bbox.reset();
+        for (int i = begin; i < best_split_index; i++) {
+            left_node.bbox.extend(h_bboxes[h_sorted_references[best_axis][i]]);
+            h_marks[h_sorted_references[best_axis][i]] = true;
+        }
+        for (int i = best_split_index; i < end; i++) {
+            right_node.bbox.extend(h_bboxes[h_sorted_references[best_axis][i]]);
+            h_marks[h_sorted_references[best_axis][i]] = false;
+        }
 
-        fill_bboxes_tmp<<<blocks_per_grid(curr_num_primitives), THREADS_PER_BLOCK>>>(d_bboxes, d_sorted_references[best_axis],
-                                                                                     begin, end, d_bboxes_tmp);
-        CHECK_CUDA(cudaGetLastError());
-
-        CHECK_CUDA(cudaFree(d_temp_storage));
-        d_temp_storage = NULL;
-        CHECK_CUDA(cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_bboxes_tmp + begin,
-                                             &d_nodes[left_node_index].bbox, best_split_index - begin,
-                                             merge_bounding_box, BoundingBox::Empty()));
-        CHECK_CUDA(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-        CHECK_CUDA(cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_bboxes_tmp + begin,
-                                             &d_nodes[left_node_index].bbox, best_split_index - begin,
-                                             merge_bounding_box, BoundingBox::Empty()));
-
-        CHECK_CUDA(cudaFree(d_temp_storage));
-        d_temp_storage = NULL;
-        CHECK_CUDA(cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_bboxes_tmp + best_split_index,
-                                             &d_nodes[right_node_index].bbox, end - best_split_index,
-                                             merge_bounding_box, BoundingBox::Empty()));
-        CHECK_CUDA(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-        CHECK_CUDA(cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_bboxes_tmp + best_split_index,
-                                             &d_nodes[right_node_index].bbox, end - best_split_index,
-                                             merge_bounding_box, BoundingBox::Empty()));
-
-        fill_marks_left<<<blocks_per_grid(best_split_index-begin), THREADS_PER_BLOCK>>>(d_sorted_references[best_axis],
-                                                                                        begin, best_split_index, d_marks);
-        fill_marks_right<<<blocks_per_grid(end-best_split_index), THREADS_PER_BLOCK>>>(d_sorted_references[best_axis],
-                                                                                       best_split_index, end, d_marks);
-        CHECK_CUDA(cudaGetLastError());
-
+        // partition sorted_references of other axes and ensure their relative order
         int other_axis[2] = { (best_axis + 1) % 3, (best_axis + 2) % 3 };
-        MarksPredicate marks_predicate = { d_marks };
+        std::stable_partition(h_sorted_references[other_axis[0]] + begin,
+                              h_sorted_references[other_axis[0]] + end,
+                              [&](int i) { return h_marks[i]; });
+        std::stable_partition(h_sorted_references[other_axis[1]] + begin,
+                              h_sorted_references[other_axis[1]] + end,
+                              [&](int i) { return h_marks[i]; });
 
-        thrust::device_ptr<int> sorted_references_other_axis_0_dev_ptr(d_sorted_references[other_axis[0]]);
-        thrust::device_ptr<int> sorted_references_other_axis_1_dev_ptr(d_sorted_references[other_axis[1]]);
-        thrust::stable_partition(sorted_references_other_axis_0_dev_ptr + begin,
-                                 sorted_references_other_axis_0_dev_ptr + end, marks_predicate);
-        thrust::stable_partition(sorted_references_other_axis_1_dev_ptr + begin,
-                                 sorted_references_other_axis_1_dev_ptr + end, marks_predicate);
-
+        // now we are sure that this node is an internal node
         num_nodes += 2;
-        make_internal_node<<<1, 1>>>(node_index, left_node_index, d_nodes);
+        curr_node.num_primitives = 0;
+        curr_node.left_node_index = left_node_index;
 
         int left_size = best_split_index - begin;
         int right_size = end - best_split_index;
 
+        // process smaller subtree first
         if (left_size < right_size) {
             stack.push( { right_node_index, best_split_index, end, depth + 1 } );
             node_index = left_node_index;
@@ -359,37 +179,22 @@ Bvh::Bvh(int num_primitives, Triangle *d_primitives) : num_primitives(num_primit
             depth = depth + 1;
         }
     }
+    std::cout << "done" << std::endl;
 
-    // rearrange triangles based on sorted_references
-    CHECK_CUDA(cudaMemcpy(d_primitives_tmp, d_primitives, num_primitives * sizeof(Triangle), cudaMemcpyDeviceToDevice));
-    rearrange_primitives<<<blocks_per_grid(num_primitives), THREADS_PER_BLOCK>>>(d_sorted_references[0],
-                                                                                 d_primitives_tmp,
-                                                                                 num_primitives, d_primitives);
-    CHECK_CUDA(cudaGetLastError());
+    std::cout << "Copying constructed BVH to device... " << std::flush;
+    // rearrange primitives based on h_sorted_references
+    std::copy(primitives.begin(), primitives.end(), h_primitives_tmp.get());
+    for (int i = 0; i < num_primitives; i++) h_primitives_tmp[i] = primitives[h_sorted_references[0][i]];
 
-    // free temporary memory
-    CHECK_CUDA(cudaFree(d_bboxes));
-    CHECK_CUDA(cudaFree(d_bboxes_tmp));
-    CHECK_CUDA(cudaFree(d_centers));
-    CHECK_CUDA(cudaFree(d_costs));
-    CHECK_CUDA(cudaFree(d_unsorted_keys));
-    CHECK_CUDA(cudaFree(d_sorted_keys));
-    CHECK_CUDA(cudaFree(d_unsorted_references));
-    CHECK_CUDA(cudaFree(d_sorted_references[0]));
-    CHECK_CUDA(cudaFree(d_sorted_references[1]));
-    CHECK_CUDA(cudaFree(d_sorted_references[2]));
-    CHECK_CUDA(cudaFree(d_marks));
-    CHECK_CUDA(cudaFree(d_primitives_tmp));
-    CHECK_CUDA(cudaFree(d_temp_storage));
+    // copy primitives to device
+    CHECK_CUDA(cudaMalloc(&d_primitives, num_primitives * sizeof(Triangle)));
+    CHECK_CUDA(cudaMemcpy(d_primitives, h_primitives_tmp.get(),
+                          num_primitives * sizeof(Triangle), cudaMemcpyHostToDevice));
 
-    // debug
-    Node *h_nodes = new Node[2 * num_primitives];
-    CHECK_CUDA(cudaMemcpy(h_nodes, d_nodes, 2 * num_primitives * sizeof(Node), cudaMemcpyDeviceToHost));
-
-    Triangle *h_primitives = new Triangle[num_primitives];
-    CHECK_CUDA(cudaMemcpy(h_primitives, d_primitives, num_primitives * sizeof(Triangle), cudaMemcpyDeviceToHost));
-
-    int *dummy = new int;
+    // copy nodes to device
+    CHECK_CUDA(cudaMalloc(&d_nodes, num_nodes * sizeof(Node)));
+    CHECK_CUDA(cudaMemcpy(d_nodes, h_nodes.get(), num_nodes * sizeof(Node), cudaMemcpyHostToDevice));
+    std::cout << "done" << std::endl;
 }
 
 #endif //RTCUDA_BVH_CUH

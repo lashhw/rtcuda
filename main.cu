@@ -2,17 +2,14 @@
 #include <fstream>
 #include <cmath>
 #include <vector>
+#include <numeric>
+#include <memory>
 #include <cfloat>
 #include <array>
 #include <algorithm>
 #include <stack>
 
 #include <curand_kernel.h>
-#include <cub/cub.cuh>
-#include <thrust/scan.h>
-#include <thrust/partition.h>
-#include <thrust/device_ptr.h>
-#include <thrust/iterator/permutation_iterator.h>
 
 #include "vec3.cuh"
 #include "matrix4x4.hpp"
@@ -153,34 +150,21 @@ int main() {
     happly::PLYData ply_in("../bun_zipper.ply");
     std::vector<std::array<double, 3>> v_pos = ply_in.getVertexPositions();
     std::vector<std::vector<size_t>> f_index = ply_in.getFaceIndices<size_t>();
-    int num_primitives = f_index.size();
 
     Transform transform(Matrix4x4::Translate(0.02f, -0.1f, 0.f));
     transform.composite(Matrix4x4::Rotate(0.f, 1.f, 0.f, 0.1f));
     for (auto &v : v_pos) transform.apply(v);
 
-    Triangle *h_primitives = new Triangle[num_primitives];
+    std::vector<Triangle> primitives;
     for (int i = 0; i < f_index.size(); i++) {
         const std::vector<size_t> &face = f_index[i];
-        h_primitives[i] = Triangle(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
-                                   Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
-                                   Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]),
-                                   NULL);
+        primitives.push_back(Triangle(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
+                                      Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
+                                      Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]),
+                                      NULL));
     }
 
-    /*
-    Triangle *h_primitives = new Triangle[3];
-    h_primitives[0] = Triangle(Vec3(2.f, -4.f, 1.f), Vec3(1.f, -3.f, -1.f), Vec3(4.f, -4.f, 0.f), NULL);
-    h_primitives[1] = Triangle(Vec3(0.f, 0.f, 0.f), Vec3(1.f, 2.f, 3.f), Vec3(0.f, 1.f, 2.f), NULL);
-    h_primitives[2] = Triangle(Vec3(2.f, 1.f, 0.f), Vec3(0.f, 2.f, 1.f), Vec3(2.f, 4.f, 1.f), NULL);
-    int num_primitives = 3;
-     */
-
-    Triangle *d_primitives;
-    CHECK_CUDA(cudaMalloc(&d_primitives, num_primitives * sizeof(Triangle)));
-    CHECK_CUDA(cudaMemcpy(d_primitives, h_primitives, num_primitives * sizeof(Triangle), cudaMemcpyHostToDevice));
-
-    Bvh bvh(num_primitives, d_primitives);
+    Bvh bvh(primitives);
 }
 
 /*

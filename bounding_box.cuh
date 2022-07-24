@@ -6,16 +6,16 @@ struct BoundingBox {
     __host__ __device__ BoundingBox(float xmin, float xmax, float ymin, float ymax, float zmin, float zmax)
         : bounds { xmin, xmax, ymin, ymax, zmin, zmax } { }
 
-    __device__ void extend(const BoundingBox &other);
-    __device__ float half_area() const;
+    __host__ __device__ void extend(const BoundingBox &other);
+    __host__ __device__ float half_area() const;
+    __host__ __device__ void reset();
 
-    __device__ static BoundingBox merge(const BoundingBox &bbox1, const BoundingBox &bbox2);
     __host__ __device__ static BoundingBox Empty() { return BoundingBox(FLT_MAX, -FLT_MAX, FLT_MAX, -FLT_MAX, FLT_MAX, -FLT_MAX); }
 
     float bounds[6];  // [xmin, xmax, ymin, ymax, zmin, zmax]
 };
 
-__device__ void BoundingBox::extend(const BoundingBox &other) {
+__host__ __device__ void BoundingBox::extend(const BoundingBox &other) {
     bounds[0] = fminf(bounds[0], other.bounds[0]);
     bounds[1] = fmaxf(bounds[1], other.bounds[1]);
     bounds[2] = fminf(bounds[2], other.bounds[2]);
@@ -24,22 +24,16 @@ __device__ void BoundingBox::extend(const BoundingBox &other) {
     bounds[5] = fmaxf(bounds[5], other.bounds[5]);
 }
 
-__device__ float BoundingBox::half_area() const {
+__host__ __device__ float BoundingBox::half_area() const {
     float e1 = bounds[1] - bounds[0];
     float e2 = bounds[3] - bounds[2];
     float e3 = bounds[5] - bounds[4];
     return (e1 + e2) * e3 + e1 * e2;
 }
 
-__device__ BoundingBox BoundingBox::merge(const BoundingBox &bbox1, const BoundingBox &bbox2) {
-    return BoundingBox(
-        fminf(bbox1.bounds[0], bbox2.bounds[0]),
-        fmaxf(bbox1.bounds[1], bbox2.bounds[1]),
-        fminf(bbox1.bounds[2], bbox2.bounds[2]),
-        fmaxf(bbox1.bounds[3], bbox2.bounds[3]),
-        fminf(bbox1.bounds[4], bbox2.bounds[4]),
-        fmaxf(bbox1.bounds[5], bbox2.bounds[5])
-    );
+__host__ __device__ void BoundingBox::reset() {
+    bounds[0] = bounds[2] = bounds[4] = FLT_MAX;
+    bounds[1] = bounds[3] = bounds[5] = -FLT_MAX;
 }
 
 #endif //RTCUDA_BOUNDING_BOX_CUH
