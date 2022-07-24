@@ -13,9 +13,16 @@ struct Bvh {
         };
     };
 
-    Bvh(const std::vector<Triangle> &primitives);
+    struct Intersection {
+        int primitive_index;
+        Triangle::Intersection triangle_intersection;
+    };
 
-    static constexpr int MAX_DEPTH = 64;
+    Bvh(const std::vector<Triangle> &primitives);
+    __device__ bool intersect_leaf(const Node* d_node_ptr, Ray &ray, Intersection &intersection) const;
+    template <typename Stack> __device__ bool traverse(Stack &stack, Ray &ray, Bvh::Intersection &intersection) const;
+
+    static constexpr int MAX_DEPTH = 64;  // depth restriction
 
     int num_primitives;
     Triangle *d_primitives;
@@ -195,6 +202,66 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
     CHECK_CUDA(cudaMalloc(&d_nodes, num_nodes * sizeof(Node)));
     CHECK_CUDA(cudaMemcpy(d_nodes, h_nodes.get(), num_nodes * sizeof(Node), cudaMemcpyHostToDevice));
     std::cout << "done" << std::endl;
+}
+
+__device__ bool Bvh::intersect_leaf(const Node* d_node_ptr, Ray &ray, Bvh::Intersection &intersection) const {
+    bool hit_anything = false;
+    for (int i = d_node_ptr->first_primitive_index;
+         i < d_node_ptr->first_primitive_index + d_node_ptr->num_primitives;
+         i++) {
+        if (d_primitives[i].intersect(ray, intersection.triangle_intersection)) {
+            intersection.primitive_index = i;
+            ray.tmax = intersection.triangle_intersection.t;
+            hit_anything = true;
+        }
+    }
+    return hit_anything;
+}
+
+template <typename Stack>
+__device__ bool Bvh::traverse(Stack &stack, Ray &ray, Bvh::Intersection &intersection) const {
+    if (d_nodes[0].is_leaf()) return intersect_leaf(&d_nodes[0], ray, intersection);
+
+    bool hit_anything = false;
+    AABBIntersector aabb_intersector(ray);
+
+    Node *left_node_ptr = &d_nodes[d_nodes[0].left_node_index];
+    while (true) {
+        Node *right_node_ptr = left_node_ptr + 1;
+
+        float entry_left;
+        if (aabb_intersector.intersect(left_node_ptr->bbox, entry_left)) {
+            if (left_node_ptr->is_leaf()) {
+                hit_anything |= intersect_leaf(left_node_ptr, ray, intersection);
+                left_node_ptr = nullptr;
+            }
+        } else {
+            left_node_ptr = nullptr;
+        }
+
+        float entry_right;
+        if (aabb_intersector.intersect(right_node_ptr->bbox, entry_right)) {
+            if (right_node_ptr->is_leaf()) {
+                hit_anything |= intersect_leaf(right_node_ptr, ray, intersection);
+                right_node_ptr = nullptr;
+            }
+        } else {
+            right_node_ptr = nullptr;
+        }
+
+        // TODO: maybe eliminate branch divergence can boost performance?
+        if (left_node_ptr) {
+            if (right_node_ptr) stack.push(right_node_ptr->left_node_index);
+            left_node_ptr = &d_nodes[left_node_ptr->left_node_index];
+        } else if (right_node_ptr) {
+            left_node_ptr = &d_nodes[right_node_ptr->left_node_index];
+        } else {
+            if (stack.empty()) break;
+            left_node_ptr = &d_nodes[stack.pop()];
+        }
+    }
+
+    return hit_anything;
 }
 
 #endif //RTCUDA_BVH_CUH

@@ -3,7 +3,7 @@ project(rtcuda CUDA)
 
 set(CMAKE_CUDA_STANDARD 14)
 
-add_executable(rtcuda main.cu vec3.cuh ray.cuh primitive.cuh camera.cuh hit_record.cuh material.cuh utility.cuh transform.hpp matrix4x4.hpp bounding_box.cuh aabb_intersector.cuh bvh.cuh)
+add_executable(rtcuda main.cu vec3.cuh ray.cuh primitive.cuh camera.cuh hit_record.cuh material.cuh utility.cuh transform.hpp matrix4x4.hpp bounding_box.cuh aabb_intersector.cuh bvh.cuh device_stack.cuh)
 
 set_target_properties(rtcuda PROPERTIES
         CUDA_ARCHITECTURES "50;75")

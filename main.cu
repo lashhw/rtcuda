@@ -21,10 +21,12 @@
 #include "hit_record.cuh"
 #include "material.cuh"
 #include "primitive.cuh"
+#include "device_stack.cuh"
 #include "bvh.cuh"
 #include "camera.cuh"
 #include "happly.h"
 
+/*
 __device__ Vec3 get_color(const Ray &ray, Primitive **primitive_ptrs, int num_primitives,
                           curandState *rand_state) {
     static constexpr int RECURSION_DEPTH = 10;
@@ -40,7 +42,7 @@ __device__ Vec3 get_color(const Ray &ray, Primitive **primitive_ptrs, int num_pr
     for (int i = 0; i < RECURSION_DEPTH; i++) {
         bool hit_anything = false;
         for (int j = 0; j < num_primitives; j++) {
-            if (primitive_ptrs[j]->hit(cur_ray, rec)) {
+            if (primitive_ptrs[j]->intersect(cur_ray, rec)) {
                 hit_anything = true;
                 cur_ray.tmax = rec.t;
             }
@@ -145,27 +147,7 @@ __global__ void render(Vec3 *fb, curandState *rand_state, int num_samples,
     color.sqrt_inplace();
     fb[pixel_idx] = color;
 }
-
-int main() {
-    happly::PLYData ply_in("../bun_zipper.ply");
-    std::vector<std::array<double, 3>> v_pos = ply_in.getVertexPositions();
-    std::vector<std::vector<size_t>> f_index = ply_in.getFaceIndices<size_t>();
-
-    Transform transform(Matrix4x4::Translate(0.02f, -0.1f, 0.f));
-    transform.composite(Matrix4x4::Rotate(0.f, 1.f, 0.f, 0.1f));
-    for (auto &v : v_pos) transform.apply(v);
-
-    std::vector<Triangle> primitives;
-    for (int i = 0; i < f_index.size(); i++) {
-        const std::vector<size_t> &face = f_index[i];
-        primitives.push_back(Triangle(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
-                                      Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
-                                      Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]),
-                                      NULL));
-    }
-
-    Bvh bvh(primitives);
-}
+ */
 
 /*
 int main() {
@@ -232,3 +214,84 @@ int main() {
     return 0;
 }
  */
+
+__global__ void render(Bvh bvh, int width, int height, uchar3 *d_framebuffer) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= width || j >= height) return;
+
+    Vec3 origin(0.f, 0.f, 1.f);
+    Vec3 upper_left_corner(-0.1f, 0.1f, 0.f);
+    Vec3 horizontal(0.2f, 0.f, 0.f);
+    Vec3 vertical(0.f, -0.2f, 0.f);
+    Vec3 lookat = upper_left_corner + horizontal * ((float)i / width) + vertical * ((float)j / height);
+    Ray ray(origin, lookat - origin);
+
+    DeviceStack<Bvh::MAX_DEPTH> stack;
+    Bvh::Intersection intersection;
+    bool hit = bvh.traverse(stack, ray, intersection);
+    Vec3 color = Vec3(0.f, 0.f, 0.f);
+    if (hit) {
+        color = bvh.d_primitives[intersection.primitive_index].n;
+        color.unit_vector_inplace();
+        color += Vec3(1.f, 1.f, 1.f);
+        color /= 2;
+    }
+
+    d_framebuffer[width * j + i].x = 255.9f * color.x;
+    d_framebuffer[width * j + i].y = 255.9f * color.y;
+    d_framebuffer[width * j + i].z = 255.9f * color.z;
+}
+
+int main() {
+    std::cout << "Reading scene... " << std::flush;
+    happly::PLYData ply_in("../bun_zipper.ply");
+    std::vector<std::array<double, 3>> v_pos = ply_in.getVertexPositions();
+    std::vector<std::vector<size_t>> f_index = ply_in.getFaceIndices<size_t>();
+    std::cout << "done" << std::endl;
+
+    std::cout << "Transforming... " << std::flush;
+    Transform transform(Matrix4x4::Translate(0.02f, -0.1f, 0.f));
+    transform.composite(Matrix4x4::Rotate(0.f, 1.f, 0.f, 0.1f));
+    for (auto &v : v_pos) transform.apply(v);
+    std::cout << "done" << std::endl;
+
+    std::vector<Triangle> primitives;
+    for (int i = 0; i < f_index.size(); i++) {
+        const std::vector<size_t> &face = f_index[i];
+        primitives.push_back(Triangle(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
+                                      Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
+                                      Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]),
+                                      NULL));
+    }
+
+    Bvh bvh(primitives);
+
+    constexpr int WIDTH = 800;
+    constexpr int HEIGHT = 800;
+    constexpr int WIDTH_PER_BLOCK = 16;
+    constexpr int HEIGHT_PER_BLOCK = 16;
+    constexpr dim3 BLOCK_SIZE(WIDTH_PER_BLOCK, HEIGHT_PER_BLOCK);
+    constexpr dim3 GRID_SIZE((WIDTH + BLOCK_SIZE.x - 1) / BLOCK_SIZE.x,
+                             (HEIGHT + BLOCK_SIZE.y - 1) / BLOCK_SIZE.y);
+
+    uchar3 *d_framebuffer;
+    CHECK_CUDA(cudaMalloc(&d_framebuffer, WIDTH * HEIGHT * 3 * sizeof(unsigned char)));
+
+    render<<<GRID_SIZE, BLOCK_SIZE>>>(bvh, WIDTH, HEIGHT, d_framebuffer);
+    CHECK_CUDA(cudaGetLastError());
+
+    uchar3 *h_framebuffer = new uchar3[WIDTH * HEIGHT];
+    CHECK_CUDA(cudaMemcpy(h_framebuffer, d_framebuffer, WIDTH * HEIGHT * sizeof(uchar3), cudaMemcpyDeviceToHost));
+
+    std::ofstream file("image.ppm");
+    file << "P3\n" << WIDTH << " " << HEIGHT << "\n255\n";
+    for (int j = 0; j < HEIGHT; j++) {
+        for (int i = 0; i < WIDTH; i++) {
+            int pixel_idx = j * WIDTH + i;
+            file << (int)h_framebuffer[pixel_idx].x << " " << (int)h_framebuffer[pixel_idx].y << " " << (int)h_framebuffer[pixel_idx].z << '\n';
+        }
+    }
+    file.close();
+}
+
