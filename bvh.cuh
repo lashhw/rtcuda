@@ -59,6 +59,14 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
     }
     profiler.stop();
 
+    std::cout << "Global bounding box: " << std::endl;
+    std::cout << "(" << h_nodes[0].bbox.bounds[0] << ", "
+                     << h_nodes[0].bbox.bounds[2] << ", "
+                     << h_nodes[0].bbox.bounds[4] << ") ";
+    std::cout << "(" << h_nodes[0].bbox.bounds[1] << ", "
+                     << h_nodes[0].bbox.bounds[3] << ", "
+                     << h_nodes[0].bbox.bounds[5] << ") " << std::endl;
+
     // TODO: change to radix sort (maybe on GPU?)
     profiler.start("Sorting primitives");
     // sort on x-coordinate

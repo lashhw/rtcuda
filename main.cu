@@ -245,14 +245,17 @@ __global__ void render(Bvh bvh, int width, int height, uchar3 *d_framebuffer,
 
 int main() {
     profiler.start("Reading scene");
-    happly::PLYData ply_in("../dragon_remeshed.ply");
+    happly::PLYData ply_in("../dragon.ply");
     std::vector<std::array<double, 3>> v_pos = ply_in.getVertexPositions();
     std::vector<std::vector<size_t>> f_index = ply_in.getFaceIndices<size_t>();
     profiler.stop();
     std::cout << v_pos.size() << " vertices, " << f_index.size() << " faces" << std::endl;
 
     profiler.start("Transforming scene");
-    Transform transform(Matrix4x4::Rotate(0.f, 1.f, 0.f, deg_to_rad(-53.f)));
+    Transform transform(Matrix4x4::Scale(0.02f, 0.02f, 0.02f));
+    transform.composite(Matrix4x4::Rotate(1.f, 0.f, 0.f, deg_to_rad(90.f)));
+    transform.composite(Matrix4x4::Rotate(0.f, 0.f, 1.f, deg_to_rad(-90.f)));
+    transform.composite(Matrix4x4::Translate(0.2f, 0.3f, 0.78f));
     for (auto &v : v_pos) transform.apply(v);
     profiler.stop();
 
@@ -269,8 +272,8 @@ int main() {
 
     Bvh bvh(primitives);
 
-    constexpr int WIDTH = 800;
-    constexpr int HEIGHT = 800;
+    constexpr int WIDTH = 1366;
+    constexpr int HEIGHT = 1024;
     constexpr int WIDTH_PER_BLOCK = 16;
     constexpr int HEIGHT_PER_BLOCK = 16;
     constexpr dim3 BLOCK_SIZE(WIDTH_PER_BLOCK, HEIGHT_PER_BLOCK);
@@ -278,10 +281,10 @@ int main() {
                              (HEIGHT + BLOCK_SIZE.y - 1) / BLOCK_SIZE.y);
 
     // define camera
-    Vec3 lookfrom(277.f, -240.f, 250.f);
-    Vec3 lookat(0.f, 60.f, -30.f);
-    Vec3 up(0.f, 0.f, 1.f);
-    float vfov = 33.f;
+    Vec3 lookfrom(3.69558f, -3.46243f, 3.25463f);
+    Vec3 lookat(3.04072f, -2.85176f, 2.80939f);
+    Vec3 up(-0.317366f, 0.312466f, 0.895346f);
+    float vfov = 28.8415038750464f;
     Vec3 w = (lookfrom - lookat).unit_vector();
     Vec3 v = (up - dot(up, w) * w).unit_vector();
     Vec3 u = cross(v, w);
