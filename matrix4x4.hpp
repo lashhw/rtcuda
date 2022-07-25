@@ -14,7 +14,7 @@ struct Matrix4x4 {
 
     static Matrix4x4 Translate(float dx, float dy, float dz);
     static Matrix4x4 Scale(float sx, float sy, float sz);
-    static Matrix4x4 Rotate(float axis_x, float axis_y, float axis_z, float theta);
+    static Matrix4x4 Rotate(float axis_x, float axis_y, float axis_z, float theta_rad);
 
     float data[4][4];
 };
@@ -33,12 +33,12 @@ Matrix4x4 Matrix4x4::Scale(float sx, float sy, float sz) {
                      0.f, 0.f, 0.f, 1.f);
 }
 
-Matrix4x4 Matrix4x4::Rotate(float axis_x, float axis_y, float axis_z, float theta) {
+Matrix4x4 Matrix4x4::Rotate(float axis_x, float axis_y, float axis_z, float theta_rad) {
     const float &x = axis_x;
     const float &y = axis_y;
     const float &z = axis_z;
-    float cos_theta = cosf(theta);
-    float sin_theta = sinf(theta);
+    float cos_theta = cosf(theta_rad);
+    float sin_theta = sinf(theta_rad);
     float cos_theta_1 = 1.f - cos_theta;
     return Matrix4x4(cos_theta + x * x * cos_theta_1,
                      x * y * cos_theta_1 - z * sin_theta,

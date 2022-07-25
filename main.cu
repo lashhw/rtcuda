@@ -6,11 +6,14 @@
 #include <memory>
 #include <cfloat>
 #include <array>
+#include <cassert>
+#include <chrono>
 #include <algorithm>
 #include <stack>
 
 #include <curand_kernel.h>
 
+#include "profiler.hpp"
 #include "vec3.cuh"
 #include "matrix4x4.hpp"
 #include "transform.hpp"
@@ -215,16 +218,13 @@ int main() {
 }
  */
 
-__global__ void render(Bvh bvh, int width, int height, uchar3 *d_framebuffer) {
+__global__ void render(Bvh bvh, int width, int height, uchar3 *d_framebuffer,
+                       Vec3 origin, Vec3 upper_left, Vec3 horizontal, Vec3 vertical) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= width || j >= height) return;
 
-    Vec3 origin(0.f, 0.f, 1.f);
-    Vec3 upper_left_corner(-0.1f, 0.1f, 0.f);
-    Vec3 horizontal(0.2f, 0.f, 0.f);
-    Vec3 vertical(0.f, -0.2f, 0.f);
-    Vec3 lookat = upper_left_corner + horizontal * ((float)i / width) + vertical * ((float)j / height);
+    Vec3 lookat = upper_left + horizontal * ((float)i / width) + vertical * ((float)j / height);
     Ray ray(origin, lookat - origin);
 
     DeviceStack<Bvh::MAX_DEPTH> stack;
@@ -244,18 +244,19 @@ __global__ void render(Bvh bvh, int width, int height, uchar3 *d_framebuffer) {
 }
 
 int main() {
-    std::cout << "Reading scene... " << std::flush;
-    happly::PLYData ply_in("../bun_zipper.ply");
+    profiler.start("Reading scene");
+    happly::PLYData ply_in("../dragon_remeshed.ply");
     std::vector<std::array<double, 3>> v_pos = ply_in.getVertexPositions();
     std::vector<std::vector<size_t>> f_index = ply_in.getFaceIndices<size_t>();
-    std::cout << "done" << std::endl;
+    profiler.stop();
+    std::cout << v_pos.size() << " vertices, " << f_index.size() << " faces" << std::endl;
 
-    std::cout << "Transforming... " << std::flush;
-    Transform transform(Matrix4x4::Translate(0.02f, -0.1f, 0.f));
-    transform.composite(Matrix4x4::Rotate(0.f, 1.f, 0.f, 0.1f));
+    profiler.start("Transforming scene");
+    Transform transform(Matrix4x4::Rotate(0.f, 1.f, 0.f, deg_to_rad(-53.f)));
     for (auto &v : v_pos) transform.apply(v);
-    std::cout << "done" << std::endl;
+    profiler.stop();
 
+    profiler.start("Converting scene to triangles");
     std::vector<Triangle> primitives;
     for (int i = 0; i < f_index.size(); i++) {
         const std::vector<size_t> &face = f_index[i];
@@ -264,6 +265,7 @@ int main() {
                                       Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]),
                                       NULL));
     }
+    profiler.stop();
 
     Bvh bvh(primitives);
 
@@ -275,15 +277,31 @@ int main() {
     constexpr dim3 GRID_SIZE((WIDTH + BLOCK_SIZE.x - 1) / BLOCK_SIZE.x,
                              (HEIGHT + BLOCK_SIZE.y - 1) / BLOCK_SIZE.y);
 
+    // define camera
+    Vec3 lookfrom(277.f, -240.f, 250.f);
+    Vec3 lookat(0.f, 60.f, -30.f);
+    Vec3 up(0.f, 0.f, 1.f);
+    float vfov = 33.f;
+    Vec3 w = (lookfrom - lookat).unit_vector();
+    Vec3 v = (up - dot(up, w) * w).unit_vector();
+    Vec3 u = cross(v, w);
+    float viewpoint_height = 2.0f * tanf(deg_to_rad(vfov) / 2);
+    float viewpoint_width = viewpoint_height * (float) WIDTH / (float) HEIGHT;
+    Vec3 horizontal = viewpoint_width * u;
+    Vec3 vertical = -viewpoint_height * v;
+    Vec3 upper_left = lookfrom - w - horizontal / 2 - vertical / 2;
+
+    profiler.start("Rendering");
     uchar3 *d_framebuffer;
     CHECK_CUDA(cudaMalloc(&d_framebuffer, WIDTH * HEIGHT * 3 * sizeof(unsigned char)));
-
-    render<<<GRID_SIZE, BLOCK_SIZE>>>(bvh, WIDTH, HEIGHT, d_framebuffer);
+    render<<<GRID_SIZE, BLOCK_SIZE>>>(bvh, WIDTH, HEIGHT, d_framebuffer,
+                                      lookfrom, upper_left, horizontal, vertical);
     CHECK_CUDA(cudaGetLastError());
-
     uchar3 *h_framebuffer = new uchar3[WIDTH * HEIGHT];
     CHECK_CUDA(cudaMemcpy(h_framebuffer, d_framebuffer, WIDTH * HEIGHT * sizeof(uchar3), cudaMemcpyDeviceToHost));
+    profiler.stop();
 
+    profiler.start("Writing image");
     std::ofstream file("image.ppm");
     file << "P3\n" << WIDTH << " " << HEIGHT << "\n255\n";
     for (int j = 0; j < HEIGHT; j++) {
@@ -293,5 +311,6 @@ int main() {
         }
     }
     file.close();
+    profiler.stop();
 }
 

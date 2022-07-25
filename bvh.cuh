@@ -33,7 +33,7 @@ struct Bvh {
 Bvh::Bvh(const std::vector<Triangle> &primitives)
     : num_primitives(primitives.size()) {
     // allocate temporary memory for BVH construction
-    std::cout << "Allocating temporary memory... " << std::flush;
+    profiler.start("Allocating temporary memory for BVH construction");
     auto h_bboxes = std::make_unique<BoundingBox[]>(num_primitives);
     auto h_centers = std::make_unique<Vec3[]>(num_primitives);
     auto h_costs = std::make_unique<float[]>(num_primitives);
@@ -44,21 +44,23 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
                                     h_sorted_references_data.get() + 2 * num_primitives };
     auto h_nodes = std::make_unique<Node[]>(2 * num_primitives);
     auto h_primitives_tmp = std::make_unique<Triangle[]>(num_primitives);
-    std::cout << "done" << std::endl;
+    profiler.stop();
 
     // initially, there is only one node
     num_nodes = 1;
 
     // initialize h_bboxes, h_centers, and h_nodes[0].bbox
+    profiler.start("Initializing bounding boxes and centers");
     h_nodes[0].bbox.reset();
     for (int i = 0; i < num_primitives; i++) {
         h_bboxes[i] = primitives[i].bounding_box();
         h_nodes[0].bbox.extend(h_bboxes[i]);
         h_centers[i] = primitives[i].center();
     }
+    profiler.stop();
 
     // TODO: change to radix sort (maybe on GPU?)
-    std::cout << "Sorting primitives... " << std::flush;
+    profiler.start("Sorting primitives");
     // sort on x-coordinate
     std::iota(h_sorted_references[0], h_sorted_references[0] + num_primitives, 0);
     std::sort(h_sorted_references[0], h_sorted_references[0] + num_primitives,
@@ -73,7 +75,7 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
     std::iota(h_sorted_references[2], h_sorted_references[2] + num_primitives, 0);
     std::sort(h_sorted_references[2], h_sorted_references[2] + num_primitives,
               [&](int i, int j) { return h_centers[i].z < h_centers[j].z; });
-    std::cout << "done" << std::endl;
+    profiler.stop();
 
     // initialize stack for BVH construction
     std::stack<std::array<int, 4>> stack;  // node_index, begin, end, depth
@@ -92,7 +94,7 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
     };
 
     // recursion step for BVH construction (implemented by stack)
-    std::cout << "Constructing BVH... " << std::flush;
+    profiler.start("Recursively constructing BVH");
     while (true) {
         Node &curr_node = h_nodes[node_index];
         int curr_num_primitives = end - begin;
@@ -186,9 +188,9 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
             depth = depth + 1;
         }
     }
-    std::cout << "done" << std::endl;
+    profiler.stop();
 
-    std::cout << "Copying constructed BVH to device... " << std::flush;
+    profiler.start("Copying constructed BVH to device");
     // rearrange primitives based on h_sorted_references
     std::copy(primitives.begin(), primitives.end(), h_primitives_tmp.get());
     for (int i = 0; i < num_primitives; i++) h_primitives_tmp[i] = primitives[h_sorted_references[0][i]];
@@ -201,7 +203,7 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
     // copy nodes to device
     CHECK_CUDA(cudaMalloc(&d_nodes, num_nodes * sizeof(Node)));
     CHECK_CUDA(cudaMemcpy(d_nodes, h_nodes.get(), num_nodes * sizeof(Node), cudaMemcpyHostToDevice));
-    std::cout << "done" << std::endl;
+    profiler.stop();
 }
 
 __device__ bool Bvh::intersect_leaf(const Node* d_node_ptr, Ray &ray, Bvh::Intersection &intersection) const {
@@ -251,6 +253,7 @@ __device__ bool Bvh::traverse(Stack &stack, Ray &ray, Bvh::Intersection &interse
 
         // TODO: maybe eliminate branch divergence can boost performance?
         if (left_node_ptr) {
+            // TODO: check which node is nearer
             if (right_node_ptr) stack.push(right_node_ptr->left_node_index);
             left_node_ptr = &d_nodes[left_node_ptr->left_node_index];
         } else if (right_node_ptr) {

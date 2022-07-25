@@ -12,6 +12,12 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
     }
 }
 
+const float PI = 3.14159265358979323846f;
+
+float deg_to_rad(float deg) {
+    return deg * (PI / 180.f);
+}
+
 __device__ Vec3 random_in_unit_sphere(curandState *local_rand_state) {
     // TODO: change to faster implementation
     Vec3 p;
