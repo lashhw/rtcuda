@@ -104,8 +104,8 @@ int main() {
     materials[0] = Material::create_matte(Vec3(0.65f, 0.05f, 0.05f));
     materials[1] = Material::create_matte(Vec3(0.12f, 0.45f, 0.15f));
     materials[2] = Material::create_matte(Vec3(0.73f, 0.73f, 0.73f));
-    materials[3] = Material::create_mirror(Vec3(0.8f, 0.8f, 0.9f));
-    materials[4] = Material::create_metal(Vec3(0.9f, 0.73f, 0.05f), 0.5f);
+    materials[3] = Material::create_matte(Vec3(0.62f, 0.57f, 0.54f));
+    materials[4] = Material::create_mirror(Vec3(0.8f, 0.8f, 0.9f));
     materials[5] = Material::create_glass(1.5f);
     materials[6] = Material::create_light(Vec3(15.f, 15.f, 15.f));
 
@@ -117,26 +117,52 @@ int main() {
     Material *d_red    = &d_materials[0];
     Material *d_green  = &d_materials[1];
     Material *d_white  = &d_materials[2];
-    Material *d_mirror = &d_materials[3];
-    Material *d_gold   = &d_materials[4];
+    Material *d_brown  = &d_materials[3];
+    Material *d_mirror = &d_materials[4];
     Material *d_glass  = &d_materials[5];
     Material *d_light  = &d_materials[6];
 
-    // create world on host
-    constexpr int NUM_PRIMITIVES = 12;
-    std::vector<Triangle> primitives(NUM_PRIMITIVES);
-    primitives[0] = Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), d_red);
-    primitives[1] = Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), d_red);
-    primitives[2] = Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_green);
-    primitives[3] = Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f), d_green);
-    primitives[4] = Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), d_white);
-    primitives[5] = Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), d_white);
-    primitives[6] = Triangle(Vec3(0.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f), d_white);
-    primitives[7] = Triangle(Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white);
-    primitives[8] = Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white);
-    primitives[9] = Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white);
-    primitives[10] = Triangle(Vec3(0.4f, 0.99f, -0.4f), Vec3(0.6f, 0.99f, -0.4f), Vec3(0.6f, 0.99f, -0.6f), d_light);
-    primitives[11] = Triangle(Vec3(0.4f, 0.99f, -0.4f), Vec3(0.4f, 0.99f, -0.6f), Vec3(0.6f, 0.99f, -0.6f), d_light);
+    // read bunny
+    profiler.start("Reading bunny");
+    happly::PLYData ply_in("../bun_zipper.ply");
+    std::vector<std::array<double, 3>> v_pos = ply_in.getVertexPositions();
+    std::vector<std::vector<size_t>> f_index = ply_in.getFaceIndices<size_t>();
+    profiler.stop();
+    std::cout << v_pos.size() << " vertices, " << f_index.size() << " faces" << std::endl;
+
+    // transform bunny
+    profiler.start("Transforming bunny");
+    Transform transform(Matrix4x4::Translate(0.0946899f, -0.0329874f, -0.0587997f));
+    transform.composite(Matrix4x4::Scale(2.f, 2.f, 2.f));
+    transform.composite(Matrix4x4::Translate(0.3f, 0.f, -0.5f));
+    for (auto &v : v_pos) transform.apply(v);
+    profiler.stop();
+
+    // convert bunny to triangles
+    profiler.start("Converting scene to triangles");
+    std::vector<Triangle> primitives;
+    for (int i = 0; i < f_index.size(); i++) {
+        const std::vector<size_t> &face = f_index[i];
+        primitives.push_back(Triangle(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
+                                      Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
+                                      Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]),
+                                      d_brown));
+    }
+    profiler.stop();
+
+    // create walls
+    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), d_red));
+    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), d_red));
+    primitives.push_back(Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_green));
+    primitives.push_back(Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f), d_green));
+    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), d_white));
+    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), d_white));
+    primitives.push_back(Triangle(Vec3(0.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
+    primitives.push_back(Triangle(Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
+    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
+    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
+    primitives.push_back(Triangle(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.6f), d_light));
+    primitives.push_back(Triangle(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.4f, 0.999f, -0.6f), Vec3(0.6f, 0.999f, -0.6f), d_light));
 
     // build bvh
     Bvh bvh(primitives);
@@ -155,9 +181,9 @@ int main() {
     constexpr int NUM_PIXELS = WIDTH * HEIGHT;
     constexpr int WIDTH_PER_BLOCK = 8;
     constexpr int HEIGHT_PER_BLOCK = 8;
-    constexpr dim3 GRID_SIZE((WIDTH + WIDTH_PER_BLOCK - 1) / WIDTH_PER_BLOCK,
-                             (HEIGHT + HEIGHT_PER_BLOCK - 1) / HEIGHT_PER_BLOCK);
-    constexpr dim3 BLOCK_SIZE(WIDTH_PER_BLOCK, HEIGHT_PER_BLOCK);
+    const dim3 GRID_SIZE((WIDTH + WIDTH_PER_BLOCK - 1) / WIDTH_PER_BLOCK,
+                         (HEIGHT + HEIGHT_PER_BLOCK - 1) / HEIGHT_PER_BLOCK);
+    const dim3 BLOCK_SIZE(WIDTH_PER_BLOCK, HEIGHT_PER_BLOCK);
     curandState *d_rand_state;
     CHECK_CUDA(cudaMalloc(&d_rand_state, NUM_PIXELS * sizeof(curandState)));
     render_init<<<GRID_SIZE, BLOCK_SIZE>>>(WIDTH, HEIGHT, d_rand_state);
@@ -168,15 +194,19 @@ int main() {
     CHECK_CUDA(cudaMalloc(&d_framebuffer, NUM_PIXELS * sizeof(Vec3)));
 
     // start rendering
+    profiler.start("Rendering");
     constexpr int NUM_SAMPLES = 1000;
     render<<<GRID_SIZE, BLOCK_SIZE>>>(camera, bvh, NUM_SAMPLES, WIDTH, HEIGHT, d_rand_state, d_framebuffer);
     CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
+    profiler.stop();
 
     // copy framebuffer to host
     auto h_framebuffer = std::make_unique<Vec3[]>(NUM_PIXELS);
     CHECK_CUDA(cudaMemcpy(h_framebuffer.get(), d_framebuffer, NUM_PIXELS * sizeof(Vec3), cudaMemcpyDeviceToHost));
 
     // write image
+    profiler.start("Writing image");
     std::ofstream file("image.ppm");
     file << "P3\n" << WIDTH << ' ' << HEIGHT << "\n255\n";
     for (int j = 0; j < HEIGHT; j++) {
@@ -191,6 +221,7 @@ int main() {
             file << ir << ' ' << ig << ' ' << ib << "\n";
         }
     }
+    profiler.stop();
 
     return 0;
 }
