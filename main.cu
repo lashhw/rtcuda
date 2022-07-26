@@ -227,7 +227,7 @@ __global__ void render(Bvh bvh, int width, int height, uchar3 *d_framebuffer,
     Vec3 lookat = upper_left + horizontal * ((float)i / width) + vertical * ((float)j / height);
     Ray ray(origin, lookat - origin);
 
-    DeviceStack<Bvh::MAX_DEPTH> stack;
+    DeviceStack<Bvh::MAX_DEPTH - 1> stack;
     Bvh::Intersection intersection;
     bool hit = bvh.traverse(stack, ray, intersection);
     Vec3 color = Vec3(0.f, 0.f, 0.f);
@@ -272,10 +272,15 @@ int main() {
 
     Bvh bvh(primitives);
 
+    // deallocate scene data that reside on host
+    v_pos.clear();
+    f_index.clear();
+    primitives.clear();
+
     constexpr int WIDTH = 1366;
     constexpr int HEIGHT = 1024;
-    constexpr int WIDTH_PER_BLOCK = 16;
-    constexpr int HEIGHT_PER_BLOCK = 16;
+    constexpr int WIDTH_PER_BLOCK = 8;
+    constexpr int HEIGHT_PER_BLOCK = 8;
     constexpr dim3 BLOCK_SIZE(WIDTH_PER_BLOCK, HEIGHT_PER_BLOCK);
     constexpr dim3 GRID_SIZE((WIDTH + BLOCK_SIZE.x - 1) / BLOCK_SIZE.x,
                              (HEIGHT + BLOCK_SIZE.y - 1) / BLOCK_SIZE.y);
@@ -294,15 +299,20 @@ int main() {
     Vec3 vertical = -viewpoint_height * v;
     Vec3 upper_left = lookfrom - w - horizontal / 2 - vertical / 2;
 
-    profiler.start("Rendering");
     uchar3 *d_framebuffer;
     CHECK_CUDA(cudaMalloc(&d_framebuffer, WIDTH * HEIGHT * 3 * sizeof(unsigned char)));
-    render<<<GRID_SIZE, BLOCK_SIZE>>>(bvh, WIDTH, HEIGHT, d_framebuffer,
-                                      lookfrom, upper_left, horizontal, vertical);
-    CHECK_CUDA(cudaGetLastError());
+
+    for (int i = 0; i < 100; i++) {
+        profiler.start("Rendering");
+        render<<<GRID_SIZE, BLOCK_SIZE>>>(bvh, WIDTH, HEIGHT, d_framebuffer,
+                                          lookfrom, upper_left, horizontal, vertical);
+        CHECK_CUDA(cudaGetLastError());
+        CHECK_CUDA(cudaDeviceSynchronize());
+        profiler.stop();
+    }
+
     uchar3 *h_framebuffer = new uchar3[WIDTH * HEIGHT];
     CHECK_CUDA(cudaMemcpy(h_framebuffer, d_framebuffer, WIDTH * HEIGHT * sizeof(uchar3), cudaMemcpyDeviceToHost));
-    profiler.stop();
 
     profiler.start("Writing image");
     std::ofstream file("image.ppm");

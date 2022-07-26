@@ -22,12 +22,13 @@ struct Bvh {
     __device__ bool intersect_leaf(const Node* d_node_ptr, Ray &ray, Intersection &intersection) const;
     template <typename Stack> __device__ bool traverse(Stack &stack, Ray &ray, Bvh::Intersection &intersection) const;
 
-    static constexpr int MAX_DEPTH = 64;  // depth restriction
+    static constexpr int MAX_DEPTH = 30;  // depth restriction
 
     int num_primitives;
     Triangle *d_primitives;
     int num_nodes;
     Node *d_nodes;
+    int max_depth;
 };
 
 Bvh::Bvh(const std::vector<Triangle> &primitives)
@@ -48,6 +49,7 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
 
     // initially, there is only one node
     num_nodes = 1;
+    max_depth = 0;
 
     // initialize h_bboxes, h_centers, and h_nodes[0].bbox
     profiler.start("Initializing bounding boxes and centers");
@@ -177,6 +179,7 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
         num_nodes += 2;
         curr_node.num_primitives = 0;
         curr_node.left_node_index = left_node_index;
+        max_depth = std::max(max_depth, depth + 1);
 
         int left_size = best_split_index - begin;
         int right_size = end - best_split_index;
@@ -197,6 +200,9 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
         }
     }
     profiler.stop();
+
+    std::cout << "BVH has " << num_nodes << " nodes and " << num_primitives
+              << " primitives, with max_depth = " << max_depth << std::endl;
 
     profiler.start("Copying constructed BVH to device");
     // rearrange primitives based on h_sorted_references
@@ -261,9 +267,17 @@ __device__ bool Bvh::traverse(Stack &stack, Ray &ray, Bvh::Intersection &interse
 
         // TODO: maybe eliminate branch divergence can boost performance?
         if (left_node_ptr) {
-            // TODO: check which node is nearer
-            if (right_node_ptr) stack.push(right_node_ptr->left_node_index);
-            left_node_ptr = &d_nodes[left_node_ptr->left_node_index];
+            if (right_node_ptr) {
+                if (entry_left > entry_right) {
+                    stack.push(left_node_ptr->left_node_index);
+                    left_node_ptr = &d_nodes[right_node_ptr->left_node_index];
+                } else {
+                    stack.push(right_node_ptr->left_node_index);
+                    left_node_ptr = &d_nodes[left_node_ptr->left_node_index];
+                }
+            } else {
+                left_node_ptr = &d_nodes[left_node_ptr->left_node_index];
+            }
         } else if (right_node_ptr) {
             left_node_ptr = &d_nodes[right_node_ptr->left_node_index];
         } else {
