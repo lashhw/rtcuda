@@ -1,42 +1,39 @@
 #ifndef RTCUDA_CAMERA_CUH
 #define RTCUDA_CAMERA_CUH
 
-class Camera {
-public:
-    __device__ Camera(Vec3 lookfrom, Vec3 lookat, Vec3 vup, float vfov_rad,
-                      float aspect_ratio, float aperture_radius) : aperture_radius(aperture_radius) {
-        float viewpoint_height = 2.0f * __tanf(vfov_rad/2);
-        float viewpoint_width = viewpoint_height * aspect_ratio;
+template <bool enable_depth_of_field>
+struct Camera;
 
-        Vec3 w = (lookfrom-lookat).unit_vector();
-        v = (vup-dot(vup, w)*w).unit_vector();
-        u = cross(v, w);
+template <>
+struct Camera<false> {
+    Camera(Vec3 lookfrom, Vec3 lookat, Vec3 up, float vfov, float aspect_ratio);
+    __device__ Ray get_ray(float x, float y) const;
 
-        camera_origin = lookfrom;
-        float focus_dist = (lookat-lookfrom).length();
-        horizontal = focus_dist * viewpoint_width * u;
-        vertical = focus_dist * viewpoint_height * v;
-        lower_left_corner = camera_origin - focus_dist * w - horizontal / 2 - vertical / 2;
-    }
-
-    __device__ Ray get_ray(float s, float t, curandState *rand_state) {
-        float x, y;
-        random_in_unit_disk(rand_state, x, y);
-        x *= aperture_radius;
-        y *= aperture_radius;
-
-        Vec3 origin = camera_origin + u*x + v*y;
-        Vec3 direction = lower_left_corner + s*horizontal + t*vertical - origin;
-        return Ray(origin, direction.unit_vector());
-    }
-
-    Vec3 u;
-    Vec3 v;
-    Vec3 camera_origin;
-    Vec3 lower_left_corner;
+    Vec3 lookfrom;
+    Vec3 upper_left;
     Vec3 horizontal;
     Vec3 vertical;
-    float aperture_radius;
 };
+
+Camera<false>::Camera(Vec3 lookfrom, Vec3 lookat, Vec3 up, float vfov, float aspect_ratio)
+    : lookfrom(lookfrom) {
+    float vfov_rad = deg_to_rad(vfov);
+
+    float viewpoint_height = 2.f * tanf(vfov_rad * 0.5f);
+    float viewpoint_width = viewpoint_height * aspect_ratio;
+
+    Vec3 w = (lookfrom-lookat).unit_vector();
+    Vec3 v = (up-dot(up, w)*w).unit_vector();
+    Vec3 u = cross(v, w);
+
+    horizontal = viewpoint_width * u;
+    vertical = -viewpoint_height * v;
+    upper_left = lookfrom - w - 0.5f * horizontal - 0.5f * vertical;
+}
+
+__device__ Ray Camera<false>::get_ray(float x, float y) const {
+    Vec3 direction = upper_left + x * horizontal + y * vertical - lookfrom;
+    return Ray(lookfrom, direction.unit_vector());
+}
 
 #endif //RTCUDA_CAMERA_CUH

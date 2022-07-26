@@ -11,12 +11,12 @@ struct AABBIntersector {
     Vec3 scaled_origin;
 };
 
-__device__ AABBIntersector::AABBIntersector(const Ray &ray) : octant { ray.unit_direction.x < 0 ? 1 : 0,
-                                                                       ray.unit_direction.y < 0 ? 1 : 0,
-                                                                       ray.unit_direction.z < 0 ? 1 : 0 } {
-    float inv_x = 1.f / ((fabsf(ray.unit_direction.x) < FLT_EPSILON) ? copysignf(FLT_EPSILON, ray.unit_direction.x) : ray.unit_direction.x);
-    float inv_y = 1.f / ((fabsf(ray.unit_direction.y) < FLT_EPSILON) ? copysignf(FLT_EPSILON, ray.unit_direction.y) : ray.unit_direction.y);
-    float inv_z = 1.f / ((fabsf(ray.unit_direction.z) < FLT_EPSILON) ? copysignf(FLT_EPSILON, ray.unit_direction.z) : ray.unit_direction.z);
+__device__ AABBIntersector::AABBIntersector(const Ray &ray) : octant { ray.unit_d.x < 0 ? 1 : 0,
+                                                                       ray.unit_d.y < 0 ? 1 : 0,
+                                                                       ray.unit_d.z < 0 ? 1 : 0 } {
+    float inv_x = 1.f / ((fabsf(ray.unit_d.x) < FLT_EPSILON) ? copysignf(FLT_EPSILON, ray.unit_d.x) : ray.unit_d.x);
+    float inv_y = 1.f / ((fabsf(ray.unit_d.y) < FLT_EPSILON) ? copysignf(FLT_EPSILON, ray.unit_d.y) : ray.unit_d.y);
+    float inv_z = 1.f / ((fabsf(ray.unit_d.z) < FLT_EPSILON) ? copysignf(FLT_EPSILON, ray.unit_d.z) : ray.unit_d.z);
     inverse_direction = Vec3(inv_x, inv_y, inv_z);
     scaled_origin = -ray.origin * inverse_direction;
 }

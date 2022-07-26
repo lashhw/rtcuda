@@ -2,22 +2,18 @@
 #define RTCUDA_PRIMITIVE_CUH
 
 struct Triangle {
-    struct Intersection {
-        float t, u, v;
-    };
-
     __host__ __device__ Triangle() { }
-    __host__ __device__ Triangle(const Vec3 &p0, const Vec3 &p1, const Vec3 &p2, Material *mat_ptr)
-        : p0(p0), e1(p0-p1), e2(p2-p0), n(cross(e1, e2)), mat_ptr(mat_ptr) { }
+    __host__ __device__ Triangle(const Vec3 &p0, const Vec3 &p1, const Vec3 &p2, Material *d_mat)
+        : p0(p0), e1(p0-p1), e2(p2-p0), n(cross(e1, e2)), d_mat(d_mat) { }
 
     __host__ __device__ Vec3 p1() const { return p0 - e1; }
     __host__ __device__ Vec3 p2() const { return p0 + e2; }
     __host__ __device__ Vec3 center() const { return (p0 + p1() + p2()) * (1.f / 3.f); }
     __host__ __device__ BoundingBox bounding_box() const;
-    __device__ bool intersect(const Ray &ray, Intersection &intersection) const;
+    __device__ bool intersect(const Ray &ray, Intersection &isect) const;
 
     Vec3 p0, e1, e2, n;
-    Material *mat_ptr;
+    Material *d_mat;
 };
 
 __host__ __device__ BoundingBox Triangle::bounding_box() const {
@@ -37,10 +33,10 @@ __host__ __device__ BoundingBox Triangle::bounding_box() const {
     return bbox;
 }
 
-__device__ bool Triangle::intersect(const Ray &ray, Triangle::Intersection &intersection) const {
+__device__ bool Triangle::intersect(const Ray &ray, Intersection &isect) const {
     Vec3 c = p0 - ray.origin;
-    Vec3 r = cross(ray.unit_direction, c);
-    float inv_det = 1.f / dot(ray.unit_direction, n);
+    Vec3 r = cross(ray.unit_d, c);
+    float inv_det = 1.f / dot(ray.unit_d, n);
 
     float u = inv_det * dot(e2, r);
     float v = inv_det * dot(e1, r);
@@ -48,7 +44,10 @@ __device__ bool Triangle::intersect(const Ray &ray, Triangle::Intersection &inte
     if (u >= 0.0f && v >= 0.0f && (u + v) <= 1.0f) {
         float t = inv_det * dot(c, n);
         if (ray.tmin <= t && t <= ray.tmax) {
-            intersection = {t, u, v};
+            isect.t = t;
+            isect.u = u;
+            isect.v = v;
+            isect.n = n;
             return true;
         }
     }

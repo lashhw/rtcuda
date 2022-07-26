@@ -1,109 +1,128 @@
 #ifndef RTCUDA_MATERIAL_CUH
 #define RTCUDA_MATERIAL_CUH
 
-class Material {
-public:
-    __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
-                                    Vec3 &attenuation, Ray &r_out) const = 0;
-    __device__ virtual bool emit(Vec3 &emit_spectrum) const = 0;
+enum MaterialType {
+    MATTE,
+    MIRROR,
+    METAL,
+    GLASS,
+    LIGHT
 };
 
-class Lambertian : public Material {
-public:
-    __device__ Lambertian(const Vec3 &albedo) : albedo(albedo) { }
-    __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
-                                    Vec3 &attenuation, Ray &r_out) const override;
-    __device__ virtual bool emit(Vec3 &emit_spectrum) const override { return false; };
+struct Material {
+    Material() { }
+    __device__ bool scatter(const Ray &r_in, const Intersection &isect,
+                            curandState &rand_state, Vec3 &attenuation, Ray &r_out);
+    __device__ bool emit(Vec3 &emitted_radiance);
 
-    Vec3 albedo;
+    static Material create_matte(const Vec3 &albedo);
+    static Material create_mirror(const Vec3 &albedo);
+    static Material create_metal(const Vec3 &albedo, float fuzz);
+    static Material create_glass(float index_of_refraction);
+    static Material create_light(const Vec3 &emitted_radiance);
+
+    union {
+        Vec3 albedo;  // for matte, mirror, metal
+        Vec3 emitted_radiance;  // for light
+    };
+    union {
+        float fuzz;  // for metal
+        float index_of_refraction;  // for glass
+    };
+    MaterialType type;
 };
 
-class Metal : public Material {
-public:
-    __device__ Metal(const Vec3 &albedo, float fuzz) : albedo(albedo), fuzz(fuzz) { }
-    __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
-                                    Vec3 &attenuation, Ray &r_out) const override;
-    __device__ virtual bool emit(Vec3 &emit_spectrum) const override { return false; };
+__device__ bool
+Material::scatter(const Ray &r_in, const Intersection &isect,
+                  curandState &rand_state, Vec3 &attenuation, Ray &r_out) {
+    if (type == LIGHT) return false;
 
-    Vec3 albedo;
-    float fuzz;
-};
+    Vec3 p = r_in.origin + isect.t * r_in.unit_d;
+    Vec3 n = isect.n.unit_vector();
+    bool intersect_front_face = dot(r_in.unit_d, n) < 0.f;
+    if (!intersect_front_face) n = -n;
 
-class Dielectric : public Material {
-public:
-    __device__ Dielectric(float index_of_refraction) : index_of_refraction(index_of_refraction) { }
-    __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
-                                    Vec3 &attenuation, Ray &r_out) const override;
-    __device__ virtual bool emit(Vec3 &emit_spectrum) const override { return false; };
+    if (type == MATTE || type == MIRROR || type == METAL) {
+        attenuation = albedo;
+        if (type == MATTE) {
+            Vec3 direction = n + random_in_unit_sphere(rand_state);
+            r_out = Ray(p, direction.unit_vector());
+        } else {
+            Vec3 unit_reflected = reflect(r_in.unit_d, n);
+            if (type == MIRROR) {
+                r_out = Ray(p, unit_reflected);
+            } else {
+                Vec3 direction = unit_reflected + fuzz * random_in_unit_sphere(rand_state);
+                r_out = Ray(p, direction.unit_vector());
+            }
+        }
+    } else if (type == GLASS) {
+        attenuation = Vec3(1.f, 1.f, 1.f);
 
-    float index_of_refraction;
-};
+        float eta_ratio = intersect_front_face ? 1.f / index_of_refraction : index_of_refraction;
 
-class Light : public Material {
-public:
-    __device__ Light(const Vec3 &spectrum) : spectrum(spectrum) { }
-    __device__ virtual bool scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
-                                    Vec3 &attenuation, Ray &r_out) const override { return false; }
-    __device__ virtual bool emit(Vec3 &emit_spectrum) const override;
+        float cos_theta = -dot(r_in.unit_d, n);
+        float sin_theta = sqrtf(1.f - cos_theta * cos_theta);
 
-    Vec3 spectrum;
-};
+        bool cannot_refract = eta_ratio * sin_theta > 1.f;
 
-__device__ bool Lambertian::scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
-                                    Vec3 &attenuation, Ray &r_out) const {
-    Vec3 n = dot(r_in.unit_direction, rec.unit_outward_normal) < 0.0f ? rec.unit_outward_normal : -rec.unit_outward_normal;
-    Vec3 target = rec.p + n + random_in_unit_sphere(rand_state);
-    attenuation = albedo;
-    Vec3 direction = target - rec.p;
-    r_out = Ray(rec.p, direction.unit_vector());
-    return true;
-}
+        // Schlick's approximation
+        float r0 = __fdividef(1 - index_of_refraction, 1 + index_of_refraction);
+        r0 = r0 * r0;
+        float reflectance = r0 + (1 - r0) * __powf((1 - cos_theta), 5);
 
-__device__ bool Metal::scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
-                               Vec3 &attenuation, Ray &r_out) const {
-    Vec3 n = dot(r_in.unit_direction, rec.unit_outward_normal) < 0.0f ? rec.unit_outward_normal : -rec.unit_outward_normal;
-    Vec3 unit_reflected = reflect(r_in.unit_direction, n);
-    attenuation = albedo;
-    Vec3 direction = unit_reflected + fuzz * random_in_unit_sphere(rand_state);
-    r_out = Ray(rec.p, direction.unit_vector());
-    return true;
-}
+        Vec3 unit_reflect_direction = reflect(r_in.unit_d, n);
+        Vec3 unit_refract_direction = refract(r_in.unit_d, n, eta_ratio);
 
-__device__ bool Dielectric::scatter(const Ray &r_in, const HitRecord &rec, curandState *rand_state,
-                                    Vec3 &attenuation, Ray &r_out) const {
-    attenuation = Vec3(1.0f, 1.0f, 1.0f);
-
-    bool from_air_to_dielectric = dot(r_in.unit_direction, rec.unit_outward_normal) < 0.0f;
-    Vec3 unit_normal = from_air_to_dielectric ? rec.unit_outward_normal : -rec.unit_outward_normal;
-    float eta_ratio = from_air_to_dielectric ? 1.0f / index_of_refraction : index_of_refraction;
-
-    float cos_theta = -dot(r_in.unit_direction, unit_normal);
-    float sin_theta = sqrtf(1.0f - cos_theta*cos_theta);
-
-    bool cannot_refract = eta_ratio * sin_theta > 1.0f;
-
-    // Schlick's approximation
-    float r0 = __fdividef(1-index_of_refraction, 1+index_of_refraction);
-    r0 = r0 * r0;
-    float reflectance = r0 + (1-r0) * __powf((1-cos_theta), 5);
-
-    Vec3 unit_reflect_direction = reflect(r_in.unit_direction, unit_normal);
-    Vec3 unit_refract_direction = refract(r_in.unit_direction, unit_normal, eta_ratio);
-
-    Vec3 unit_r_out_direction;
-    if (cannot_refract || curand_uniform(rand_state) < reflectance)
-        unit_r_out_direction = unit_reflect_direction;
-    else
-        unit_r_out_direction = unit_refract_direction;
-
-    r_out = Ray(rec.p, unit_r_out_direction);
+        if (cannot_refract || curand_uniform(&rand_state) < reflectance)
+            r_out = Ray(p, unit_reflect_direction);
+        else
+            r_out = Ray(p, unit_refract_direction);
+    }
 
     return true;
 }
 
-__device__ bool Light::emit(Vec3 &emit_spectrum) const {
-    emit_spectrum = spectrum;
+__device__ bool Material::emit(Vec3 &emitted_radiance) {
+    if (type != LIGHT) return false;
+    emitted_radiance = this->emitted_radiance;
     return true;
+}
+
+Material Material::create_matte(const Vec3 &albedo) {
+    Material m;
+    m.albedo = albedo;
+    m.type = MATTE;
+    return m;
+}
+
+Material Material::create_mirror(const Vec3 &albedo) {
+    Material m;
+    m.albedo = albedo;
+    m.type = MIRROR;
+    return m;
+}
+
+Material Material::create_metal(const Vec3 &albedo, float fuzz) {
+    Material m;
+    m.albedo = albedo;
+    m.fuzz = fuzz;
+    m.type = METAL;
+    return m;
+}
+
+Material Material::create_glass(float index_of_refraction) {
+    Material m;
+    m.index_of_refraction = index_of_refraction;
+    m.type = GLASS;
+    return m;
+}
+
+Material Material::create_light(const Vec3 &emitted_radiance) {
+    Material m;
+    m.emitted_radiance = emitted_radiance;
+    m.type = LIGHT;
+    return m;
 }
 
 #endif //RTCUDA_MATERIAL_CUH
