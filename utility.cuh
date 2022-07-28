@@ -37,6 +37,25 @@ __device__ void random_in_unit_disk(curandState &rand_state, float &x, float &y)
     } while (x * x + y * y >= 1.0f);
 }
 
+// reference: C Wachter & N Binder, A Fast and Robust Method for Avoiding Self-Intersection
+__device__ Vec3 offset_ray_origin(const Vec3 &p, const Vec3 &n) {
+    constexpr float int_scale = 256.f;
+    constexpr float float_scale = 1.f / 65536.f;
+    constexpr float origin = 1.f / 32.f;
+
+    int of_i_x = int_scale * n.x;
+    int of_i_y = int_scale * n.y;
+    int of_i_z = int_scale * n.z;
+
+    float p_i_x = __int_as_float(__float_as_int(p.x) + (p.x < 0 ? -of_i_x : of_i_x));
+    float p_i_y = __int_as_float(__float_as_int(p.y) + (p.y < 0 ? -of_i_y : of_i_y));
+    float p_i_z = __int_as_float(__float_as_int(p.z) + (p.z < 0 ? -of_i_z : of_i_z));
+
+    return Vec3(fabsf(p.x) < origin ? p.x + float_scale * n.x : p_i_x,
+                fabsf(p.y) < origin ? p.y + float_scale * n.y : p_i_y,
+                fabsf(p.z) < origin ? p.z + float_scale * n.z : p_i_z);
+}
+
 int clamp(int value, int low, int high) {
     return value < low ? low : (value > high ? high : value);
 }

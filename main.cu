@@ -49,7 +49,9 @@ __device__ Vec3 get_color(const Ray &ray, const Bvh &bvh, Stack &stack, curandSt
             if (d_mat->emit(emit_spectrum)) {
                 accumulate_radiance += cur_attenuation * emit_spectrum;
             }
-            if (d_mat->scatter(cur_ray, isect, d_isect_primitive->n, rand_state, tmp_attenuation, cur_ray)) {
+            if (d_mat->scatter(cur_ray, isect,
+                               d_isect_primitive->p0, d_isect_primitive->e1, d_isect_primitive->e2, d_isect_primitive->n,
+                               rand_state, tmp_attenuation, cur_ray)) {
                 cur_attenuation *= tmp_attenuation;
             } else {
                 return accumulate_radiance;
