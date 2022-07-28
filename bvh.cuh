@@ -14,8 +14,8 @@ struct Bvh {
     };
 
     Bvh(const std::vector<Triangle> &primitives);
-    __device__ bool intersect_leaf(const Node* d_node_ptr, Ray &ray, Intersection &isect) const;
-    template <typename Stack> __device__ bool traverse(Stack &stack, Ray &ray, Intersection &isect) const;
+    __device__ bool intersect_leaf(const Node* d_node_ptr, Ray &ray, Intersection &isect, Triangle* &d_isect_primitive) const;
+    template <typename Stack> __device__ bool traverse(Stack &stack, Ray &ray, Intersection &isect, Triangle* &d_isect_primitive) const;
 
     static constexpr int MAX_DEPTH = 30;  // depth restriction
 
@@ -215,13 +215,13 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
     profiler.stop();
 }
 
-__device__ bool Bvh::intersect_leaf(const Node* d_node_ptr, Ray &ray, Intersection &isect) const {
+__device__ bool Bvh::intersect_leaf(const Node* d_node_ptr, Ray &ray, Intersection &isect, Triangle* &d_isect_primitive) const {
     bool hit_anything = false;
     for (int i = d_node_ptr->first_primitive_index;
          i < d_node_ptr->first_primitive_index + d_node_ptr->num_primitives;
          i++) {
         if (d_primitives[i].intersect(ray, isect)) {
-            isect.d_mat = d_primitives[i].d_mat;
+            d_isect_primitive = &d_primitives[i];
             ray.tmax = isect.t;
             hit_anything = true;
         }
@@ -230,8 +230,8 @@ __device__ bool Bvh::intersect_leaf(const Node* d_node_ptr, Ray &ray, Intersecti
 }
 
 template <typename Stack>
-__device__ bool Bvh::traverse(Stack &stack, Ray &ray, Intersection &isect) const {
-    if (d_nodes[0].is_leaf()) return intersect_leaf(&d_nodes[0], ray, isect);
+__device__ bool Bvh::traverse(Stack &stack, Ray &ray, Intersection &isect, Triangle* &d_isect_primitive) const {
+    if (d_nodes[0].is_leaf()) return intersect_leaf(&d_nodes[0], ray, isect, d_isect_primitive);
 
     bool hit_anything = false;
     AABBIntersector aabb_intersector(ray);
@@ -243,7 +243,7 @@ __device__ bool Bvh::traverse(Stack &stack, Ray &ray, Intersection &isect) const
         float entry_left;
         if (aabb_intersector.intersect(left_node_ptr->bbox, entry_left)) {
             if (left_node_ptr->is_leaf()) {
-                hit_anything |= intersect_leaf(left_node_ptr, ray, isect);
+                hit_anything |= intersect_leaf(left_node_ptr, ray, isect, d_isect_primitive);
                 left_node_ptr = nullptr;
             }
         } else {
@@ -253,7 +253,7 @@ __device__ bool Bvh::traverse(Stack &stack, Ray &ray, Intersection &isect) const
         float entry_right;
         if (aabb_intersector.intersect(right_node_ptr->bbox, entry_right)) {
             if (right_node_ptr->is_leaf()) {
-                hit_anything |= intersect_leaf(right_node_ptr, ray, isect);
+                hit_anything |= intersect_leaf(right_node_ptr, ray, isect, d_isect_primitive);
                 right_node_ptr = nullptr;
             }
         } else {

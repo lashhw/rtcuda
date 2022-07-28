@@ -44,10 +44,7 @@ __device__ bool Triangle::intersect(const Ray &ray, Intersection &isect) const {
     if (u >= 0.0f && v >= 0.0f && (u + v) <= 1.0f) {
         float t = inv_det * dot(c, n);
         if (ray.tmin <= t && t <= ray.tmax) {
-            isect.t = t;
-            isect.u = u;
-            isect.v = v;
-            isect.n = n;
+            isect = { t, u, v };
             return true;
         }
     }

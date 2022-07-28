@@ -11,7 +11,7 @@ enum MaterialType {
 
 struct Material {
     Material() { }
-    __device__ bool scatter(const Ray &r_in, const Intersection &isect,
+    __device__ bool scatter(const Ray &r_in, const Intersection &isect, Vec3 n,
                             curandState &rand_state, Vec3 &attenuation, Ray &r_out);
     __device__ bool emit(Vec3 &emitted_radiance);
 
@@ -33,12 +33,12 @@ struct Material {
 };
 
 __device__ bool
-Material::scatter(const Ray &r_in, const Intersection &isect,
+Material::scatter(const Ray &r_in, const Intersection &isect, Vec3 n,
                   curandState &rand_state, Vec3 &attenuation, Ray &r_out) {
     if (type == LIGHT) return false;
 
     Vec3 p = r_in.origin + isect.t * r_in.unit_d;
-    Vec3 n = isect.n.unit_vector();
+    n.unit_vector_inplace();
     bool intersect_front_face = dot(r_in.unit_d, n) < 0.f;
     if (!intersect_front_face) n = -n;
 

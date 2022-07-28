@@ -39,16 +39,17 @@ __device__ Vec3 get_color(const Ray &ray, const Bvh &bvh, Stack &stack, curandSt
     Vec3 accumulate_radiance = Vec3(0.f, 0.f, 0.f);
 
     Intersection isect;
+    Triangle *d_isect_primitive;
     Vec3 tmp_attenuation;
 
     for (int i = 0; i < RECURSION_DEPTH; i++) {
-        if (bvh.traverse(stack, cur_ray, isect)) {
+        if (bvh.traverse(stack, cur_ray, isect, d_isect_primitive)) {
             Vec3 emit_spectrum;
-            Material *d_mat = isect.d_mat;
+            Material *d_mat = d_isect_primitive->d_mat;
             if (d_mat->emit(emit_spectrum)) {
                 accumulate_radiance += cur_attenuation * emit_spectrum;
             }
-            if (d_mat->scatter(cur_ray, isect, rand_state, tmp_attenuation, cur_ray)) {
+            if (d_mat->scatter(cur_ray, isect, d_isect_primitive->n, rand_state, tmp_attenuation, cur_ray)) {
                 cur_attenuation *= tmp_attenuation;
             } else {
                 return accumulate_radiance;
@@ -195,7 +196,7 @@ int main() {
 
     // start rendering
     profiler.start("Rendering");
-    constexpr int NUM_SAMPLES = 1000;
+    constexpr int NUM_SAMPLES = 100;
     render<<<GRID_SIZE, BLOCK_SIZE>>>(camera, bvh, NUM_SAMPLES, WIDTH, HEIGHT, d_rand_state, d_framebuffer);
     CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaDeviceSynchronize());
