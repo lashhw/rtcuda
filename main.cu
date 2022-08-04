@@ -13,117 +13,44 @@
 
 #include <curand_kernel.h>
 
+#include "constant.hpp"
 #include "profiler.hpp"
 #include "vec3.cuh"
 #include "matrix4x4.hpp"
 #include "transform.hpp"
+#include "utility.cuh"
 #include "ray.cuh"
 #include "bounding_box.cuh"
 #include "aabb_intersector.cuh"
-#include "utility.cuh"
 #include "intersection.hpp"
 #include "material.cuh"
+#include "light.cuh"
 #include "primitive.cuh"
-#include "bvh.cuh"
 #include "device_stack.cuh"
+#include "bvh.cuh"
+#include "scene.cuh"
 #include "camera.cuh"
 #include "happly.h"
-
-template <typename Stack>
-__device__ Vec3 get_color(const Ray &ray, const Bvh &bvh, Stack &stack, curandState &rand_state) {
-    static constexpr int RECURSION_DEPTH = 10;
-    static constexpr Vec3 BACKGROUND_COLOR = Vec3(0.f, 0.f, 0.f);
-
-    Ray cur_ray = ray;
-    Vec3 cur_attenuation = Vec3(1.f, 1.f, 1.f);
-    Vec3 accumulate_radiance = Vec3(0.f, 0.f, 0.f);
-
-    Intersection isect;
-    Triangle *d_isect_primitive;
-    Vec3 tmp_attenuation;
-
-    for (int i = 0; i < RECURSION_DEPTH; i++) {
-        if (bvh.traverse(stack, cur_ray, isect, d_isect_primitive)) {
-            Vec3 emit_spectrum;
-            Material *d_mat = d_isect_primitive->d_mat;
-            if (d_mat->emit(emit_spectrum)) {
-                accumulate_radiance += cur_attenuation * emit_spectrum;
-            }
-            if (d_mat->scatter(cur_ray, isect,
-                               d_isect_primitive->p0, d_isect_primitive->e1, d_isect_primitive->e2, d_isect_primitive->n,
-                               rand_state, tmp_attenuation, cur_ray)) {
-                cur_attenuation *= tmp_attenuation;
-            } else {
-                return accumulate_radiance;
-            }
-        } else {
-            return accumulate_radiance + cur_attenuation * BACKGROUND_COLOR;
-        }
-    }
-
-    return Vec3(0.f, 0.f, 0.f);
-}
-
-__global__ void render_init(int width, int height, curandState *d_rand_state) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= width || j >= height) return;
-
-    int pixel_idx = j * width + i;
-    curand_init(1, pixel_idx, 0, &d_rand_state[pixel_idx]);
-}
-
-// TODO: eliminate fp_64 operations
-__global__ void render(Camera<false> camera, Bvh bvh, int num_samples, int width, int height,
-                       curandState *d_rand_state, Vec3 *d_framebuffer) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= width || j >= height) return;
-
-    int pixel_idx = j * width + i;
-    curandState local_rand_state = d_rand_state[pixel_idx];
-    Vec3 color(0.f, 0.f, 0.f);
-    DeviceStack<Bvh::MAX_DEPTH - 1> stack;
-
-    float inv_width = 1.f / width;
-    float inv_height = 1.f / height;
-    for (int s = 0; s < num_samples; s++) {
-        float x = (i + curand_uniform(&local_rand_state)) * inv_width;
-        float y = (j + curand_uniform(&local_rand_state)) * inv_height;
-        Ray ray = camera.get_ray(x, y);
-        color += get_color(ray, bvh, stack, local_rand_state);
-    }
-
-    d_rand_state[pixel_idx] = local_rand_state;
-    color /= num_samples;
-    color.sqrt_inplace();
-    d_framebuffer[pixel_idx] = color;
-}
+#include "render.cuh"
 
 int main() {
     // create materials on host
-    constexpr int NUM_MATERIALS = 7;
-    std::vector<Material> materials(NUM_MATERIALS);
-    materials[0] = Material::create_matte(Vec3(0.65f, 0.05f, 0.05f));
-    materials[1] = Material::create_matte(Vec3(0.12f, 0.45f, 0.15f));
-    materials[2] = Material::create_matte(Vec3(0.73f, 0.73f, 0.73f));
-    materials[3] = Material::create_matte(Vec3(0.62f, 0.57f, 0.54f));
-    materials[4] = Material::create_mirror(Vec3(0.8f, 0.8f, 0.9f));
-    materials[5] = Material::create_glass(1.5f);
-    materials[6] = Material::create_light(Vec3(15.f, 15.f, 15.f));
+    std::vector<Material> materials;
+    materials.push_back(Material::make_matte(Vec3(0.65f, 0.05f, 0.05f)));
+    materials.push_back(Material::make_matte(Vec3(0.12f, 0.45f, 0.15f)));
+    materials.push_back(Material::make_matte(Vec3(0.73f, 0.73f, 0.73f)));
+    materials.push_back(Material::make_matte(Vec3(0.62f, 0.57f, 0.54f)));
 
     // move materials to device
+    int num_materials = materials.size();
     Material *d_materials;
-    CHECK_CUDA(cudaMalloc(&d_materials, NUM_MATERIALS * sizeof(Material)));
-    CHECK_CUDA(cudaMemcpy(d_materials, materials.data(), NUM_MATERIALS * sizeof(Material), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMalloc(&d_materials, num_materials * sizeof(Material)));
+    CHECK_CUDA(cudaMemcpy(d_materials, materials.data(), num_materials * sizeof(Material), cudaMemcpyHostToDevice));
     materials.clear();
     Material *d_red    = &d_materials[0];
     Material *d_green  = &d_materials[1];
     Material *d_white  = &d_materials[2];
     Material *d_brown  = &d_materials[3];
-    Material *d_mirror = &d_materials[4];
-    Material *d_glass  = &d_materials[5];
-    Material *d_light  = &d_materials[6];
 
     // read bunny
     profiler.start("Reading bunny");
@@ -142,7 +69,7 @@ int main() {
     profiler.stop();
 
     // convert bunny to triangles
-    profiler.start("Converting scene to triangles");
+    profiler.start("Converting bunny to triangles");
     std::vector<Triangle> primitives;
     for (int i = 0; i < f_index.size(); i++) {
         const std::vector<size_t> &face = f_index[i];
@@ -164,11 +91,23 @@ int main() {
     primitives.push_back(Triangle(Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
     primitives.push_back(Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
     primitives.push_back(Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
-    primitives.push_back(Triangle(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.6f), d_light));
-    primitives.push_back(Triangle(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.4f, 0.999f, -0.6f), Vec3(0.6f, 0.999f, -0.6f), d_light));
+
+    // create lights on host
+    std::vector<Light> lights;
+    lights.push_back(Light::make_point_light(Vec3(0.5, 0.9, -0.5), Vec3(1.f, 1.f, 1.f)));
+
+    // move lights to device
+    int num_lights = lights.size();
+    Light *d_lights;
+    CHECK_CUDA(cudaMalloc(&d_lights, num_lights * sizeof(Light)));
+    CHECK_CUDA(cudaMemcpy(d_lights, lights.data(), num_lights * sizeof(Light), cudaMemcpyHostToDevice));
+    lights.clear();
 
     // build bvh
     Bvh bvh(primitives);
+
+    // create scene
+    Scene scene = { bvh, num_lights, d_lights };
 
     // create camera
     constexpr int WIDTH = 600;
@@ -191,6 +130,7 @@ int main() {
     CHECK_CUDA(cudaMalloc(&d_rand_state, NUM_PIXELS * sizeof(curandState)));
     render_init<<<GRID_SIZE, BLOCK_SIZE>>>(WIDTH, HEIGHT, d_rand_state);
     CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
 
     // allocate framebuffer on device
     Vec3 *d_framebuffer;
@@ -199,7 +139,7 @@ int main() {
     // start rendering
     profiler.start("Rendering");
     constexpr int NUM_SAMPLES = 100;
-    render<<<GRID_SIZE, BLOCK_SIZE>>>(camera, bvh, NUM_SAMPLES, WIDTH, HEIGHT, d_rand_state, d_framebuffer);
+    render<<<GRID_SIZE, BLOCK_SIZE>>>(camera, scene, NUM_SAMPLES, WIDTH, HEIGHT, d_rand_state, d_framebuffer);
     CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaDeviceSynchronize());
     profiler.stop();

@@ -3,17 +3,21 @@
 
 struct Triangle {
     __host__ __device__ Triangle() { }
-    __host__ __device__ Triangle(const Vec3 &p0, const Vec3 &p1, const Vec3 &p2, Material *d_mat)
-        : p0(p0), e1(p0-p1), e2(p2-p0), n(cross(e1, e2)), d_mat(d_mat) { }
+    __host__ __device__ Triangle(const Vec3 &p0, const Vec3 &p1, const Vec3 &p2,
+                                 Material *d_mat, Light *d_area_light = NULL)
+        : p0(p0), e1(p0-p1), e2(p2-p0), n(cross(e1, e2)), d_mat(d_mat), d_area_light(d_area_light) { }
 
     __host__ __device__ Vec3 p1() const { return p0 - e1; }
     __host__ __device__ Vec3 p2() const { return p0 + e2; }
     __host__ __device__ Vec3 center() const { return (p0 + p1() + p2()) * (1.f / 3.f); }
     __host__ __device__ BoundingBox bounding_box() const;
     __device__ bool intersect(const Ray &ray, Intersection &isect) const;
+    __device__ bool intersect(const Ray &ray) const;
+    __device__ Vec3 p(int u, int v) const { return p0 - u * e1 + v * e2; }
 
     Vec3 p0, e1, e2, n;
     Material *d_mat;
+    Light *d_area_light;
 };
 
 __host__ __device__ BoundingBox Triangle::bounding_box() const {
@@ -44,7 +48,27 @@ __device__ bool Triangle::intersect(const Ray &ray, Intersection &isect) const {
     if (u >= 0.0f && v >= 0.0f && (u + v) <= 1.0f) {
         float t = inv_det * dot(c, n);
         if (0 < t && t <= ray.tmax) {
-            isect = { t, u, v };
+            isect.t = t;
+            isect.u = u;
+            isect.v = v;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+__device__ bool Triangle::intersect(const Ray &ray) const {
+    Vec3 c = p0 - ray.origin;
+    Vec3 r = cross(ray.unit_d, c);
+    float inv_det = 1.f / dot(ray.unit_d, n);
+
+    float u = inv_det * dot(e2, r);
+    float v = inv_det * dot(e1, r);
+
+    if (u >= 0.0f && v >= 0.0f && (u + v) <= 1.0f) {
+        float t = inv_det * dot(c, n);
+        if (0 < t && t <= ray.tmax) {
             return true;
         }
     }
