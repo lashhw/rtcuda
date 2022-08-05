@@ -9,6 +9,7 @@
 #include <cassert>
 #include <chrono>
 #include <algorithm>
+#include <unordered_map>
 #include <stack>
 
 #include <curand_kernel.h>
@@ -24,9 +25,10 @@
 #include "aabb_intersector.cuh"
 #include "intersection.hpp"
 #include "material.cuh"
+#include "shape.cuh"
+#include "device_stack.cuh"
 #include "light.cuh"
 #include "primitive.cuh"
-#include "device_stack.cuh"
 #include "bvh.cuh"
 #include "scene.cuh"
 #include "camera.cuh"
@@ -70,31 +72,62 @@ int main() {
 
     // convert bunny to triangles
     profiler.start("Converting bunny to triangles");
-    std::vector<Triangle> primitives;
+    std::vector<Triangle> shapes;
+    std::vector<Material*> material_ptrs;
     for (int i = 0; i < f_index.size(); i++) {
         const std::vector<size_t> &face = f_index[i];
-        primitives.push_back(Triangle(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
-                                      Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
-                                      Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]),
-                                      d_brown));
+        shapes.emplace_back(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
+                            Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
+                            Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]));
+        material_ptrs.push_back(d_brown);
     }
     profiler.stop();
 
     // create walls
-    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), d_red));
-    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), d_red));
-    primitives.push_back(Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_green));
-    primitives.push_back(Triangle(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f), d_green));
-    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), d_white));
-    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), d_white));
-    primitives.push_back(Triangle(Vec3(0.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
-    primitives.push_back(Triangle(Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
-    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
-    primitives.push_back(Triangle(Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f), d_white));
+    shapes.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f));
+    material_ptrs.push_back(d_red);
+    shapes.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f));
+    material_ptrs.push_back(d_red);
+    shapes.emplace_back(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
+    material_ptrs.push_back(d_green);
+    shapes.emplace_back(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f));
+    material_ptrs.push_back(d_green);
+    shapes.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f));
+    material_ptrs.push_back(d_white);
+    shapes.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f));
+    material_ptrs.push_back(d_white);
+    shapes.emplace_back(Vec3(0.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f));
+    material_ptrs.push_back(d_white);
+    shapes.emplace_back(Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
+    material_ptrs.push_back(d_white);
+    shapes.emplace_back(Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
+    material_ptrs.push_back(d_white);
+    shapes.emplace_back(Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
+    material_ptrs.push_back(d_white);
+
+    // create area light triangles
+    std::unordered_map<int, Vec3> shape_idx_to_L;
+    shapes.emplace_back(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.6f));
+    material_ptrs.push_back(d_white);
+    shape_idx_to_L[shapes.size() - 1] = Vec3(150.f, 150.f, 150.f);
+    shapes.emplace_back(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.4f, 0.999f, -0.6f), Vec3(0.6f, 0.999f, -0.6f));
+    material_ptrs.push_back(d_white);
+    shape_idx_to_L[shapes.size() - 1] = Vec3(150.f, 150.f, 150.f);
+
+    // move shapes to device
+    int num_shapes = shapes.size();
+    Triangle *d_shapes;
+    CHECK_CUDA(cudaMalloc(&d_shapes, num_shapes * sizeof(Triangle)));
+    CHECK_CUDA(cudaMemcpy(d_shapes, shapes.data(), num_shapes * sizeof(Triangle), cudaMemcpyHostToDevice));
 
     // create lights on host
     std::vector<Light> lights;
-    lights.push_back(Light::make_point_light(Vec3(0.5, 0.9, -0.5), Vec3(1.f, 1.f, 1.f)));
+    // lights.push_back(Light::make_point_light(Vec3(0.7f, 0.15f, -0.6f), Vec3(0.5f, 0.5f, 0.5f)));
+    std::unordered_map<int, int> shape_idx_to_light_idx;
+    for (const auto x : shape_idx_to_L) {
+        lights.push_back(Light::make_area_light(&d_shapes[x.first], x.second));
+        shape_idx_to_light_idx[x.first] = lights.size() - 1;
+    }
 
     // move lights to device
     int num_lights = lights.size();
@@ -103,8 +136,20 @@ int main() {
     CHECK_CUDA(cudaMemcpy(d_lights, lights.data(), num_lights * sizeof(Light), cudaMemcpyHostToDevice));
     lights.clear();
 
+    // create primitives on host
+    std::vector<Primitive> primitives;
+    for (int i = 0; i < num_shapes; i++) {
+        if (shape_idx_to_light_idx.count(i) != 0) {
+            primitives.emplace_back(&d_shapes[i], material_ptrs[i], &d_lights[shape_idx_to_light_idx[i]]);
+        } else {
+            primitives.emplace_back(&d_shapes[i], material_ptrs[i]);
+        }
+    }
+
     // build bvh
-    Bvh bvh(primitives);
+    Bvh bvh(shapes, primitives);
+    shapes.clear();
+    primitives.clear();
 
     // create scene
     Scene scene = { bvh, num_lights, d_lights };
@@ -138,7 +183,7 @@ int main() {
 
     // start rendering
     profiler.start("Rendering");
-    constexpr int NUM_SAMPLES = 100;
+    constexpr int NUM_SAMPLES = 10;
     render<<<GRID_SIZE, BLOCK_SIZE>>>(camera, scene, NUM_SAMPLES, WIDTH, HEIGHT, d_rand_state, d_framebuffer);
     CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaDeviceSynchronize());

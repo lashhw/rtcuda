@@ -12,18 +12,18 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
 
     Vec3 L = Vec3::make_zeros();
 
-    // sample light source with MIS
+    // sample_f light source with MIS
     {
         Vec3 unit_wi;
         Vec3 Li;
         float light_t;
         float light_pdf;
-        if (light.sample(isect, unit_wi, Li, light_t, light_pdf)) {
+        if (light.sample_Li(isect, rand_state, unit_wi, Li, light_t, light_pdf)) {
             Vec3 unit_n = dot(isect.unit_n, unit_wi) > 0.f ? isect.unit_n : -isect.unit_n;
             Vec3 f;
             if (d_mat->get_f(unit_wo, unit_wi, unit_n, f)) {
                 f *= dot(unit_wi, unit_n);
-                float scattering_pdf = d_mat->pdf(unit_wo, unit_wi, unit_n);
+                float scattering_pdf = d_mat->pdf_f(unit_wo, unit_wi, unit_n);
 
                 // test whether the ray is occluded
                 Ray shadow_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi, light_t);
@@ -40,18 +40,18 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
         }
     }
 
-    // sample BSDF with MIS
+    // sample_Li BSDF with MIS
     {
         if (!light.is_delta()) {
             Vec3 unit_n = isect.unit_n;
             Vec3 f, unit_wi;
             float scattering_pdf;
-            if (d_mat->sample(unit_wo, rand_state, unit_n, f, unit_wi, scattering_pdf)) {
+            if (d_mat->sample_f(unit_wo, rand_state, unit_n, f, unit_wi, scattering_pdf)) {
                 f *= dot(unit_wi, unit_n);
                 float weight = 1.f;
 
                 if (!d_mat->is_specular()) {
-                    float light_pdf = light.pdf(isect, unit_wi);
+                    float light_pdf = light.pdf_Li(isect, unit_wi, unit_n);
                     if (light_pdf == 0.f) return L;
                     weight = power_heuristic(scattering_pdf, light_pdf);
                 }
@@ -60,7 +60,7 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
                 bool Li_is_valid = false;
                 Ray light_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
                 Intersection light_isect;
-                Triangle *d_light_isect_primitive;
+                Primitive *d_light_isect_primitive;
                 if (scene.bvh.traverse(stack, light_ray, light_isect, d_light_isect_primitive)) {
                     Light *d_isect_area_light = d_light_isect_primitive->d_area_light;
                     if (d_isect_area_light == &light) {
@@ -91,7 +91,7 @@ __device__ Vec3 Lo(const Ray &ray, const Scene &scene, curandState &rand_state, 
     for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
         stack.reset();
         Intersection isect;
-        Triangle *d_isect_primitive;
+        Primitive *d_isect_primitive;
         bool hit_anything = scene.bvh.traverse(stack, cur_ray, isect, d_isect_primitive);
 
         // possibily add "Le" at intersection point
@@ -107,21 +107,22 @@ __device__ Vec3 Lo(const Ray &ray, const Scene &scene, curandState &rand_state, 
 
         if (!hit_anything) break;
 
-        // sample "Ld" (direct lighting) only if intersected material is not specular,
+        // sample_Li "Ld" (direct lighting) only if intersected material is not specular,
         // since it is a waste to track specular ray twice (once here, another is in next loop)
         Material *d_mat = d_isect_primitive->d_mat;
         if (!d_mat->is_specular()) {
             L += beta * Ld(scene, isect, cur_ray.unit_d, d_mat, rand_state, stack);
         }
 
-        // sample BSDF to get new path direction
+        // sample_Li BSDF to get new path direction
         Vec3 unit_n = isect.unit_n;
         Vec3 f, unit_wi;
         float pdf;
-        bool scattered = d_mat->sample(cur_ray.unit_d, rand_state, unit_n, f, unit_wi, pdf);
+        bool scattered = d_mat->sample_f(cur_ray.unit_d, rand_state, unit_n, f, unit_wi, pdf);
         if (!scattered) break;
         beta *= f * dot(unit_wi, unit_n) / pdf;
         last_bounce_is_specular = d_mat->is_specular();
+        cur_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
     }
 
     return L;

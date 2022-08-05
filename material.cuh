@@ -13,9 +13,9 @@ struct Material {
                             const Vec3 &p0, const Vec3 &e1, const Vec3 &e2, const Vec3 &n,
                             curandState &rand_state, Vec3 &attenuation, Ray &r_out);
     __device__ bool get_f(const Vec3 &wo, const Vec3 &wi, const Vec3 &n, Vec3 &f) const;
-    __device__ float pdf(const Vec3 &wo, const Vec3 &unit_wi, const Vec3 &unit_n) const;
-    __device__ bool sample(const Vec3 &unit_wo, curandState &rand_state, Vec3 &unit_n,
-                           Vec3 &f, Vec3 &unit_wi, float &pdf) const;
+    __device__ float pdf_f(const Vec3 &wo, const Vec3 &unit_wi, const Vec3 &unit_n) const;
+    __device__ bool sample_f(const Vec3 &unit_wo, curandState &rand_state, Vec3 &unit_n,
+                             Vec3 &f, Vec3 &unit_wi, float &pdf) const;
     __device__ bool is_specular() const { return type == MIRROR || type == GLASS; }
 
     static Material make_matte(const Vec3 &albedo);
@@ -104,21 +104,21 @@ __device__ bool Material::get_f(const Vec3 &wo, const Vec3 &wi, const Vec3 &n, V
     return false;
 }
 
-__device__ float Material::pdf(const Vec3 &wo, const Vec3 &unit_wi, const Vec3 &unit_n) const {
+__device__ float Material::pdf_f(const Vec3 &wo, const Vec3 &unit_wi, const Vec3 &unit_n) const {
     if (type == MATTE) {
-        // assume pdf > 0
+        // assume pdf_Li > 0
         return dot(unit_wi, unit_n) * INV_PI;
     }
     return 0.f;
 }
 
 // this function also modify unit_n so that unit_n and unit_wi are in the same hemisphere
-__device__ bool Material::sample(const Vec3 &unit_wo, curandState &rand_state, Vec3 &unit_n,
-                                 Vec3 &f, Vec3 &unit_wi, float &pdf) const {
+__device__ bool Material::sample_f(const Vec3 &unit_wo, curandState &rand_state, Vec3 &unit_n,
+                                   Vec3 &f, Vec3 &unit_wi, float &pdf) const {
     if (dot(unit_wo, unit_n) > 0.f) unit_n = -unit_n;
     if (type == MATTE) {
-        unit_wi = (unit_n + uniform_sample_sphere(rand_state)).unit_vector();
         f = albedo * INV_PI;
+        unit_wi = (unit_n + uniform_sample_sphere(rand_state)).unit_vector();
         pdf = dot(unit_wi, unit_n) * INV_PI;
         return true;
     } else if (type == MIRROR) {

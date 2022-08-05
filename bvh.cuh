@@ -13,21 +13,24 @@ struct Bvh {
         };
     };
 
-    Bvh(const std::vector<Triangle> &primitives);
-    __device__ bool intersect_leaf(const Node *d_node_ptr, Ray &ray, Intersection &isect, Triangle* &d_isect_primitive) const;
+    Bvh(const std::vector<Triangle> &shapes, const std::vector<Primitive> &primitives);
+    __device__ bool intersect_leaf(const Node *d_node_ptr, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const;
     __device__ bool intersect_leaf(const Node *d_node_ptr, Ray &ray) const;
-    __device__ bool traverse(DeviceStack &stack, Ray &ray, Intersection &isect, Triangle* &d_isect_primitive) const;
+    __device__ bool traverse(DeviceStack &stack, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const;
     __device__ bool traverse(DeviceStack &stack, Ray &ray) const;
 
     int num_primitives;
-    Triangle *d_primitives;
+    Primitive *d_primitives;
     int num_nodes;
     Node *d_nodes;
     int max_depth;
 };
 
-Bvh::Bvh(const std::vector<Triangle> &primitives)
-    : num_primitives(primitives.size()) {
+Bvh::Bvh(const std::vector<Triangle> &shapes, const std::vector<Primitive> &primitives)
+    : num_primitives(shapes.size()) {
+    // shapes must be the same size as primitives
+    assert(shapes.size() == primitives.size());
+
     // allocate temporary memory for BVH construction
     profiler.start("Allocating temporary memory for BVH construction");
     auto h_bboxes = std::make_unique<BoundingBox[]>(num_primitives);
@@ -39,7 +42,7 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
                                     h_sorted_references_data.get() + num_primitives,
                                     h_sorted_references_data.get() + 2 * num_primitives };
     auto h_nodes = std::make_unique<Node[]>(2 * num_primitives);
-    auto h_primitives_tmp = std::make_unique<Triangle[]>(num_primitives);
+    auto h_primitives_tmp = std::make_unique<Primitive[]>(num_primitives);
     profiler.stop();
 
     // initially, there is only one node
@@ -50,13 +53,13 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
     profiler.start("Initializing bounding boxes and centers");
     h_nodes[0].bbox.reset();
     for (int i = 0; i < num_primitives; i++) {
-        h_bboxes[i] = primitives[i].bounding_box();
+        h_bboxes[i] = shapes[i].bounding_box();
         h_nodes[0].bbox.extend(h_bboxes[i]);
-        h_centers[i] = primitives[i].center();
+        h_centers[i] = shapes[i].center();
     }
     profiler.stop();
 
-    std::cout << "Global bounding box: " << std::endl;
+    std::cout << "Global bounding box: ";
     std::cout << "(" << h_nodes[0].bbox.bounds[0] << ", "
                      << h_nodes[0].bbox.bounds[2] << ", "
                      << h_nodes[0].bbox.bounds[4] << ") ";
@@ -99,7 +102,7 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
     };
 
     // recursion step for BVH construction (implemented by stack)
-    profiler.start("Recursively constructing BVH");
+    profiler.start("Top-down constructing BVH");
     while (true) {
         Node &curr_node = h_nodes[node_index];
         int curr_num_primitives = end - begin;
@@ -201,13 +204,12 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
 
     profiler.start("Copying constructed BVH to device");
     // rearrange primitives based on h_sorted_references
-    std::copy(primitives.begin(), primitives.end(), h_primitives_tmp.get());
     for (int i = 0; i < num_primitives; i++) h_primitives_tmp[i] = primitives[h_sorted_references[0][i]];
 
     // copy primitives to device
-    CHECK_CUDA(cudaMalloc(&d_primitives, num_primitives * sizeof(Triangle)));
+    CHECK_CUDA(cudaMalloc(&d_primitives, num_primitives * sizeof(Primitive)));
     CHECK_CUDA(cudaMemcpy(d_primitives, h_primitives_tmp.get(),
-                          num_primitives * sizeof(Triangle), cudaMemcpyHostToDevice));
+                          num_primitives * sizeof(Primitive), cudaMemcpyHostToDevice));
 
     // copy nodes to device
     CHECK_CUDA(cudaMalloc(&d_nodes, num_nodes * sizeof(Node)));
@@ -216,25 +218,20 @@ Bvh::Bvh(const std::vector<Triangle> &primitives)
 }
 
 // closest-hit intersector
-__device__ bool Bvh::intersect_leaf(const Node *d_node_ptr, Ray &ray, Intersection &isect, Triangle* &d_isect_primitive) const {
-    int closest_idx = -1;
+__device__ bool Bvh::intersect_leaf(const Node *d_node_ptr, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const {
+    bool hit_anything = false;
 
     for (int i = d_node_ptr->first_primitive_index;
          i < d_node_ptr->first_primitive_index + d_node_ptr->num_primitives;
          i++) {
-        if (d_primitives[i].intersect(ray, isect)) {
-            closest_idx = i;
+        if (d_primitives[i].d_shape->intersect(ray, isect)) {
+            hit_anything = true;
+            d_isect_primitive = &d_primitives[i];
             ray.tmax = isect.t;
         }
     }
 
-    if (closest_idx == -1) return false;
-
-    d_isect_primitive = &d_primitives[closest_idx];
-    isect.p = d_isect_primitive->p(isect.u, isect.v);
-    isect.unit_n = (-d_isect_primitive->n).unit_vector();
-
-    return true;
+    return hit_anything;
 }
 
 // any-hit intersector
@@ -242,14 +239,15 @@ __device__ bool Bvh::intersect_leaf(const Node *d_node_ptr, Ray &ray) const {
     for (int i = d_node_ptr->first_primitive_index;
          i < d_node_ptr->first_primitive_index + d_node_ptr->num_primitives;
          i++) {
-        if (d_primitives[i].intersect(ray)) {
+        if (d_primitives[i].d_shape->intersect(ray)) {
             return true;
         }
     }
     return false;
 }
 
-__device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect, Triangle* &d_isect_primitive) const {
+// closest-hit traverser
+__device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const {
     if (d_nodes[0].is_leaf()) return intersect_leaf(&d_nodes[0], ray, isect, d_isect_primitive);
 
     bool hit_anything = false;
@@ -298,6 +296,11 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect,
             if (stack.empty()) break;
             left_node_ptr = &d_nodes[stack.pop()];
         }
+    }
+
+    if (hit_anything) {
+        isect.p = d_isect_primitive->d_shape->p(isect.u, isect.v);
+        isect.unit_n = -d_isect_primitive->d_shape->n.unit_vector();
     }
 
     return hit_anything;
