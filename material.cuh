@@ -12,8 +12,7 @@ struct Material {
     __device__ bool scatter(const Ray &r_in, const Intersection &isect,
                             const Vec3 &p0, const Vec3 &e1, const Vec3 &e2, const Vec3 &n,
                             curandState &rand_state, Vec3 &attenuation, Ray &r_out);
-    __device__ bool get_f(const Vec3 &wo, const Vec3 &wi, const Vec3 &n, Vec3 &f) const;
-    __device__ float pdf_f(const Vec3 &wo, const Vec3 &unit_wi, const Vec3 &unit_n) const;
+    __device__ bool get_f(const Vec3 &unit_wo, const Vec3 &unit_wi, const Vec3 &unit_n, Vec3 &f, float &pdf) const;
     __device__ bool sample_f(const Vec3 &unit_wo, curandState &rand_state, Vec3 &unit_n,
                              Vec3 &f, Vec3 &unit_wi, float &pdf) const;
     __device__ bool is_specular() const { return type == MIRROR || type == GLASS; }
@@ -94,22 +93,16 @@ Material Material::make_glass(float index_of_refraction) {
 }
 
 // return false if f is all zeros
-__device__ bool Material::get_f(const Vec3 &wo, const Vec3 &wi, const Vec3 &n, Vec3 &f) const {
+__device__ bool Material::get_f(const Vec3 &unit_wo, const Vec3 &unit_wi, const Vec3 &unit_n,
+                                Vec3 &f, float &pdf) const {
     if (type == MATTE) {
-        if (same_hemisphere(wo, wi, n)) {
+        if (same_hemisphere(unit_wo, unit_wi, unit_n)) {
             f = albedo * INV_PI;
+            pdf = dot(unit_wi, unit_n) * INV_PI;
             return true;
         }
     }
     return false;
-}
-
-__device__ float Material::pdf_f(const Vec3 &wo, const Vec3 &unit_wi, const Vec3 &unit_n) const {
-    if (type == MATTE) {
-        // assume pdf_Li > 0
-        return dot(unit_wi, unit_n) * INV_PI;
-    }
-    return 0.f;
 }
 
 // this function also modify unit_n so that unit_n and unit_wi are in the same hemisphere

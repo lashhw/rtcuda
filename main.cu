@@ -109,10 +109,10 @@ int main() {
     std::unordered_map<int, Vec3> shape_idx_to_L;
     shapes.emplace_back(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.6f));
     material_ptrs.push_back(d_white);
-    shape_idx_to_L[shapes.size() - 1] = Vec3(150.f, 150.f, 150.f);
+    shape_idx_to_L[shapes.size() - 1] = Vec3(15.f, 15.f, 15.f);
     shapes.emplace_back(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.4f, 0.999f, -0.6f), Vec3(0.6f, 0.999f, -0.6f));
     material_ptrs.push_back(d_white);
-    shape_idx_to_L[shapes.size() - 1] = Vec3(150.f, 150.f, 150.f);
+    shape_idx_to_L[shapes.size() - 1] = Vec3(15.f, 15.f, 15.f);
 
     // move shapes to device
     int num_shapes = shapes.size();
@@ -183,7 +183,7 @@ int main() {
 
     // start rendering
     profiler.start("Rendering");
-    constexpr int NUM_SAMPLES = 10;
+    constexpr int NUM_SAMPLES = 100;
     render<<<GRID_SIZE, BLOCK_SIZE>>>(camera, scene, NUM_SAMPLES, WIDTH, HEIGHT, d_rand_state, d_framebuffer);
     CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaDeviceSynchronize());

@@ -16,8 +16,10 @@ struct Bvh {
     Bvh(const std::vector<Triangle> &shapes, const std::vector<Primitive> &primitives);
     __device__ bool intersect_leaf(const Node *d_node_ptr, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const;
     __device__ bool intersect_leaf(const Node *d_node_ptr, Ray &ray) const;
+    __device__ bool intersect_leaf_exclude(const Node *d_node_ptr, const Triangle *d_excluded_shape, Ray &ray) const;
     __device__ bool traverse(DeviceStack &stack, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const;
     __device__ bool traverse(DeviceStack &stack, Ray &ray) const;
+    __device__ bool traverse_exclude(const Triangle *d_excluded_shape, DeviceStack &stack, Ray &ray) const;
 
     int num_primitives;
     Primitive *d_primitives;
@@ -246,8 +248,22 @@ __device__ bool Bvh::intersect_leaf(const Node *d_node_ptr, Ray &ray) const {
     return false;
 }
 
+// any-hit intersector but exclude d_excluded_shape
+__device__ bool Bvh::intersect_leaf_exclude(const Bvh::Node *d_node_ptr, const Triangle *d_excluded_shape, Ray &ray) const {
+    for (int i = d_node_ptr->first_primitive_index;
+         i < d_node_ptr->first_primitive_index + d_node_ptr->num_primitives;
+         i++) {
+        if (d_primitives[i].d_shape->intersect(ray) && d_primitives[i].d_shape != d_excluded_shape) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // closest-hit traverser
 __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const {
+    stack.reset();
+
     if (d_nodes[0].is_leaf()) return intersect_leaf(&d_nodes[0], ray, isect, d_isect_primitive);
 
     bool hit_anything = false;
@@ -308,6 +324,8 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect,
 
 // any-hit traverser
 __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray) const {
+    stack.reset();
+
     if (d_nodes[0].is_leaf()) return intersect_leaf(&d_nodes[0], ray);
 
     AABBIntersector aabb_intersector(ray);
@@ -330,6 +348,62 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray) const {
         if (aabb_intersector.intersect(right_node_ptr->bbox, entry_right)) {
             if (right_node_ptr->is_leaf()) {
                 if (intersect_leaf(right_node_ptr, ray)) return true;
+                right_node_ptr = nullptr;
+            }
+        } else {
+            right_node_ptr = nullptr;
+        }
+
+        // TODO: maybe eliminate branch divergence can boost performance?
+        if (left_node_ptr) {
+            if (right_node_ptr) {
+                if (entry_left > entry_right) {
+                    stack.push(left_node_ptr->left_node_index);
+                    left_node_ptr = &d_nodes[right_node_ptr->left_node_index];
+                } else {
+                    stack.push(right_node_ptr->left_node_index);
+                    left_node_ptr = &d_nodes[left_node_ptr->left_node_index];
+                }
+            } else {
+                left_node_ptr = &d_nodes[left_node_ptr->left_node_index];
+            }
+        } else if (right_node_ptr) {
+            left_node_ptr = &d_nodes[right_node_ptr->left_node_index];
+        } else {
+            if (stack.empty()) break;
+            left_node_ptr = &d_nodes[stack.pop()];
+        }
+    }
+
+    return false;
+}
+
+// any-hit traverser but exclude d_excluded_shape
+__device__ bool Bvh::traverse_exclude(const Triangle *d_excluded_shape, DeviceStack &stack, Ray &ray) const {
+    stack.reset();
+
+    if (d_nodes[0].is_leaf()) return intersect_leaf_exclude(&d_nodes[0], d_excluded_shape, ray);
+
+    AABBIntersector aabb_intersector(ray);
+
+    Node *left_node_ptr = &d_nodes[d_nodes[0].left_node_index];
+    while (true) {
+        Node *right_node_ptr = left_node_ptr + 1;
+
+        float entry_left;
+        if (aabb_intersector.intersect(left_node_ptr->bbox, entry_left)) {
+            if (left_node_ptr->is_leaf()) {
+                if (intersect_leaf_exclude(left_node_ptr, d_excluded_shape, ray)) return true;
+                left_node_ptr = nullptr;
+            }
+        } else {
+            left_node_ptr = nullptr;
+        }
+
+        float entry_right;
+        if (aabb_intersector.intersect(right_node_ptr->bbox, entry_right)) {
+            if (right_node_ptr->is_leaf()) {
+                if (intersect_leaf_exclude(right_node_ptr, d_excluded_shape, ray)) return true;
                 right_node_ptr = nullptr;
             }
         } else {

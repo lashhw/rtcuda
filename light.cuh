@@ -10,7 +10,7 @@ struct Light {
     Light() { }
     __device__ bool sample_Li(const Intersection &isect, curandState &rand_state, Vec3 &unit_wi,
                               Vec3 &Li, float &t, float &pdf) const;
-    __device__ float pdf_Li(const Intersection &isect, const Vec3 &unit_wi, const Vec3 &unit_n) const;
+    __device__ float pdf_Li(const Intersection &isect, const Vec3 &unit_wi) const;
     __device__ bool get_Le(const Vec3 &w, Vec3 &Le) const;
     __device__ bool is_delta() const { return type == POINT_LIGHT; }
 
@@ -41,19 +41,22 @@ __device__ bool Light::sample_Li(const Intersection &isect, curandState &rand_st
         t = unit_wi.length();
         unit_wi /= t;
         Li = L;
+        // convert pdf from area to solid angle
+        pdf *= (shape_p - isect.p).length_squared() / abs_dot(d_shape->n.unit_vector(), unit_wi);
+        return true;
     }
 }
 
-__device__ float Light::pdf_Li(const Intersection &isect, const Vec3 &unit_wi, const Vec3 &unit_n) const {
+__device__ float Light::pdf_Li(const Intersection &isect, const Vec3 &unit_wi) const {
     if (type == POINT_LIGHT) {
         return 0.f;
     } else if (type == AREA_LIGHT) {
-        Ray light_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
-        Intersection isect_light;
-        if (d_shape->intersect(light_ray, isect_light)) {
-            Vec3 isect_light_p = d_shape->p(isect_light.u, isect_light.v);
-            // TODO: for sphere, this line should be modified
-            return (isect_light_p - isect.p).length_squared() / (d_shape->area() * abs_dot(d_shape->n, unit_wi));
+        Ray light_ray = Ray(isect.p, unit_wi);
+        Intersection light_isect;
+        if (d_shape->intersect(light_ray, light_isect)) {
+            Vec3 light_isect_p = d_shape->p(light_isect.u, light_isect.v);
+            Vec3 light_unit_n = d_shape->n.unit_vector();
+            return (light_isect_p - isect.p).length_squared() / (d_shape->area() * abs_dot(light_unit_n, unit_wi));
         } else {
             return 0.f;
         }

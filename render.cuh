@@ -12,7 +12,7 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
 
     Vec3 L = Vec3::make_zeros();
 
-    // sample_f light source with MIS
+    // sample light source with MIS
     {
         Vec3 unit_wi;
         Vec3 Li;
@@ -21,14 +21,13 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
         if (light.sample_Li(isect, rand_state, unit_wi, Li, light_t, light_pdf)) {
             Vec3 unit_n = dot(isect.unit_n, unit_wi) > 0.f ? isect.unit_n : -isect.unit_n;
             Vec3 f;
-            if (d_mat->get_f(unit_wo, unit_wi, unit_n, f)) {
+            float scattering_pdf;
+            if (d_mat->get_f(unit_wo, unit_wi, unit_n, f, scattering_pdf)) {
                 f *= dot(unit_wi, unit_n);
-                float scattering_pdf = d_mat->pdf_f(unit_wo, unit_wi, unit_n);
 
                 // test whether the ray is occluded
-                Ray shadow_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi, light_t);
-                stack.reset();
-                if (!scene.bvh.traverse(stack, shadow_ray)) {
+                Ray light_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi, light_t);
+                if (!scene.bvh.traverse_exclude(light.d_shape, stack, light_ray)) {
                     if (light.is_delta()) {
                         L += f * Li / light_pdf;
                     } else {
@@ -40,24 +39,27 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
         }
     }
 
-    // sample_Li BSDF with MIS
+    // sample BSDF with MIS
     {
         if (!light.is_delta()) {
+            // sample a direction based on material's BSDF
             Vec3 unit_n = isect.unit_n;
             Vec3 f, unit_wi;
             float scattering_pdf;
             if (d_mat->sample_f(unit_wo, rand_state, unit_n, f, unit_wi, scattering_pdf)) {
                 f *= dot(unit_wi, unit_n);
-                float weight = 1.f;
 
+                // if BSDF is specular, there is no need to apply MIS
+                float weight = 1.f;
                 if (!d_mat->is_specular()) {
-                    float light_pdf = light.pdf_Li(isect, unit_wi, unit_n);
+                    float light_pdf = light.pdf_Li(isect, unit_wi);
                     if (light_pdf == 0.f) return L;
                     weight = power_heuristic(scattering_pdf, light_pdf);
                 }
 
                 Vec3 Li;
                 bool Li_is_valid = false;
+
                 Ray light_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
                 Intersection light_isect;
                 Primitive *d_light_isect_primitive;
@@ -86,16 +88,15 @@ __device__ Vec3 Lo(const Ray &ray, const Scene &scene, curandState &rand_state, 
     Vec3 L = Vec3::make_zeros();
     Vec3 beta = Vec3::make_ones();
     Ray cur_ray = ray;
-    bool last_bounce_is_specular = false;
+    bool specular_bounce = false;
 
     for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
-        stack.reset();
         Intersection isect;
         Primitive *d_isect_primitive;
         bool hit_anything = scene.bvh.traverse(stack, cur_ray, isect, d_isect_primitive);
 
         // possibily add "Le" at intersection point
-        if (bounce == 0 || last_bounce_is_specular) {
+        if (bounce == 0 || specular_bounce) {
             if (hit_anything) {
                 if (d_isect_primitive->d_area_light) {
                     L += beta * d_isect_primitive->d_area_light->L;
@@ -107,21 +108,21 @@ __device__ Vec3 Lo(const Ray &ray, const Scene &scene, curandState &rand_state, 
 
         if (!hit_anything) break;
 
-        // sample_Li "Ld" (direct lighting) only if intersected material is not specular,
+        // sample "Ld" (direct lighting) only if intersected material is not specular,
         // since it is a waste to track specular ray twice (once here, another is in next loop)
         Material *d_mat = d_isect_primitive->d_mat;
-        if (!d_mat->is_specular()) {
+        specular_bounce = d_mat->is_specular();
+        if (!specular_bounce) {
             L += beta * Ld(scene, isect, cur_ray.unit_d, d_mat, rand_state, stack);
         }
 
-        // sample_Li BSDF to get new path direction
+        // sample BSDF to get new path direction
         Vec3 unit_n = isect.unit_n;
         Vec3 f, unit_wi;
         float pdf;
         bool scattered = d_mat->sample_f(cur_ray.unit_d, rand_state, unit_n, f, unit_wi, pdf);
         if (!scattered) break;
         beta *= f * dot(unit_wi, unit_n) / pdf;
-        last_bounce_is_specular = d_mat->is_specular();
         cur_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
     }
 
@@ -146,11 +147,11 @@ __global__ void render(Camera<false> camera, Scene scene, int num_samples, int w
 
     int pixel_idx = j * width + i;
     curandState local_rand_state = d_rand_state[pixel_idx];
-    Vec3 L(0.f, 0.f, 0.f);
-    DeviceStack stack;
-
     float inv_width = 1.f / width;
     float inv_height = 1.f / height;
+    DeviceStack stack;
+    Vec3 L(0.f, 0.f, 0.f);
+
     for (int s = 0; s < num_samples; s++) {
         float x = (i + curand_uniform(&local_rand_state)) * inv_width;
         float y = (j + curand_uniform(&local_rand_state)) * inv_height;

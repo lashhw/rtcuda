@@ -82,7 +82,7 @@ __device__ Vec3 Triangle::sample_p(curandState &rand_state, float &pdf) {
 }
 
 __device__ float Triangle::area() {
-    return 0.5 * cross(e1, e2).length();
+    return 0.5 * n.length();
 }
 
 #endif //RTCUDA_SHAPE_CUH

@@ -1,6 +1,7 @@
 #ifndef RTCUDA_CAMERA_CUH
 #define RTCUDA_CAMERA_CUH
 
+// TODO: implement depth of field
 template <bool enable_depth_of_field>
 struct Camera;
 
