@@ -306,10 +306,10 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect,
     return hit_anything;
 }
 
+// any-hit traverser
 __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray) const {
     if (d_nodes[0].is_leaf()) return intersect_leaf(&d_nodes[0], ray);
 
-    bool hit_anything = false;
     AABBIntersector aabb_intersector(ray);
 
     Node *left_node_ptr = &d_nodes[d_nodes[0].left_node_index];
@@ -319,7 +319,7 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray) const {
         float entry_left;
         if (aabb_intersector.intersect(left_node_ptr->bbox, entry_left)) {
             if (left_node_ptr->is_leaf()) {
-                hit_anything |= intersect_leaf(left_node_ptr, ray);
+                if (intersect_leaf(left_node_ptr, ray)) return true;
                 left_node_ptr = nullptr;
             }
         } else {
@@ -329,7 +329,7 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray) const {
         float entry_right;
         if (aabb_intersector.intersect(right_node_ptr->bbox, entry_right)) {
             if (right_node_ptr->is_leaf()) {
-                hit_anything |= intersect_leaf(right_node_ptr, ray);
+                if (intersect_leaf(right_node_ptr, ray)) return true;
                 right_node_ptr = nullptr;
             }
         } else {
@@ -357,7 +357,7 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray) const {
         }
     }
 
-    return hit_anything;
+    return false;
 }
 
 #endif //RTCUDA_BVH_CUH
