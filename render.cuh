@@ -53,7 +53,7 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
                 float weight = 1.f;
                 if (!d_mat->is_specular()) {
                     float light_pdf = light.pdf_Li(isect, unit_wi);
-                    if (light_pdf == 0.f) return L;
+                    if (light_pdf == 0.f) return L * scene.num_lights;
                     weight = power_heuristic(scattering_pdf, light_pdf);
                 }
 
