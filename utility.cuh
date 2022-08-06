@@ -62,7 +62,7 @@ __device__ bool same_hemisphere(const Vec3 &wo, const Vec3 &wi, const Vec3 &n) {
 __device__ void uniform_sample_disk(curandState &rand_state, float &x, float &y) {
     float r = sqrtf(curand_uniform(&rand_state));
     float theta = TWO_PI * curand_uniform(&rand_state);
-    __sincosf(theta, &y, &x);
+    sincosf(theta, &y, &x);
     x *= r;
     y *= r;
 }
@@ -72,7 +72,7 @@ __device__ Vec3 uniform_sample_sphere(curandState &rand_state) {
     float r = sqrtf(1 - z * z);
     float phi = TWO_PI * curand_uniform(&rand_state);
     float x, y;
-    __sincosf(phi, &y, &x);
+    sincosf(phi, &y, &x);
     return Vec3(r * x, r * y, z);
 }
 

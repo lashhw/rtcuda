@@ -11,7 +11,7 @@ struct Vec3 {
     __host__ __device__ Vec3& operator+=(const Vec3 &v2);
     __host__ __device__ Vec3& operator-=(const Vec3 &v2);
     __host__ __device__ Vec3& operator*=(const Vec3 &v2);
-             __device__ Vec3& operator/=(const Vec3 &v2);
+    __host__ __device__ Vec3& operator/=(const Vec3 &v2);
     __host__ __device__ Vec3& operator*=(float t);
     __host__ __device__ Vec3& operator/=(float t);
 
@@ -40,8 +40,8 @@ __host__ __device__ Vec3 operator*(const Vec3 &v1, const Vec3 &v2) {
     return Vec3(v1.x*v2.x, v1.y*v2.y, v1.z*v2.z);
 }
 
-         __device__ Vec3 operator/(const Vec3 &v1, const Vec3 &v2) {
-    return Vec3(__fdividef(v1.x, v2.x), __fdividef(v1.y, v2.y), __fdividef(v1.z, v2.z));
+__host__ __device__ Vec3 operator/(const Vec3 &v1, const Vec3 &v2) {
+    return Vec3(v1.x/v2.x, v1.y/v2.y, v1.z/v2.z);
 }
 
 __host__ __device__ Vec3 operator*(const Vec3 &v, float t) {
@@ -105,10 +105,10 @@ __host__ __device__ Vec3& Vec3::operator*=(const Vec3 &v2) {
     return *this;
 }
 
-         __device__ Vec3& Vec3::operator/=(const Vec3 &v2) {
-    x = __fdividef(x, v2.x);
-    y = __fdividef(y, v2.y);
-    z = __fdividef(z, v2.z);
+__host__ __device__ Vec3& Vec3::operator/=(const Vec3 &v2) {
+    x /= v2.x;
+    y /= v2.y;
+    z /= v2.z;
     return *this;
 }
 
