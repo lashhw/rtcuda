@@ -80,22 +80,20 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
 }
 
 // outgoing radiance "Lo" estimator
-__device__ Vec3 Lo(const Ray &ray, const Scene &scene, curandState &rand_state, DeviceStack &stack) {
-    // TODO: change to russian roulette
-    static constexpr int MAX_BOUNCES = 10;
-
+__device__ Vec3 Lo(const Ray &ray, const Scene &scene, int max_bounces, int rr_threshold,
+                   curandState &rand_state, DeviceStack &stack) {
     Vec3 L = Vec3::make_zeros();
     Vec3 beta = Vec3::make_ones();
     Ray cur_ray = ray;
     bool specular_bounce = false;
 
-    for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
+    for (int bounces = 0; bounces < max_bounces; bounces++) {
         Intersection isect;
         Primitive *d_isect_primitive;
         bool hit_anything = scene.bvh.traverse(stack, cur_ray, isect, d_isect_primitive);
 
         // possibily add "Le" at intersection point
-        if (bounce == 0 || specular_bounce) {
+        if (bounces == 0 || specular_bounce) {
             if (hit_anything) {
                 if (d_isect_primitive->d_area_light) {
                     L += beta * d_isect_primitive->d_area_light->L;
@@ -122,6 +120,14 @@ __device__ Vec3 Lo(const Ray &ray, const Scene &scene, curandState &rand_state, 
         Vec3 f = d_mat->sample_f(cur_ray.unit_d, rand_state, unit_n, unit_wi, pdf);
         beta *= f * dot(unit_wi, unit_n) / pdf;
         cur_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
+
+        // Russian roulette
+        float beta_max = beta.max();
+        if (beta_max < rr_threshold && bounces > 3) {
+            float p_terminate = fmaxf(0.05f, 1 - beta_max);
+            if (curand_uniform(&rand_state) < p_terminate) break;
+            beta /= 1 - p_terminate;
+        }
     }
 
     return L;
@@ -137,8 +143,8 @@ __global__ void render_init(int width, int height, curandState *d_rand_state) {
 }
 
 // TODO: eliminate fp_64 operations
-__global__ void render(Camera<false> camera, Scene scene, int num_samples, int width, int height,
-                       curandState *d_rand_state, Vec3 *d_framebuffer) {
+__global__ void render(Camera<false> camera, Scene scene, int num_samples, int max_bounces, int rr_threshold,
+                       int width, int height, curandState *d_rand_state, Vec3 *d_framebuffer) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= width || j >= height) return;
@@ -154,7 +160,7 @@ __global__ void render(Camera<false> camera, Scene scene, int num_samples, int w
         float x = (i + curand_uniform(&local_rand_state)) * inv_width;
         float y = (j + curand_uniform(&local_rand_state)) * inv_height;
         Ray ray = camera.get_ray(x, y);
-        L += Lo(ray, scene, local_rand_state, stack);
+        L += Lo(ray, scene, max_bounces, rr_threshold, local_rand_state, stack);
     }
 
     d_rand_state[pixel_idx] = local_rand_state;

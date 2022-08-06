@@ -183,8 +183,11 @@ int main() {
 
     // start rendering
     profiler.start("Rendering");
-    constexpr int NUM_SAMPLES = 100;
-    render<<<GRID_SIZE, BLOCK_SIZE>>>(camera, scene, NUM_SAMPLES, WIDTH, HEIGHT, d_rand_state, d_framebuffer);
+    constexpr int NUM_SAMPLES = 128;
+    constexpr int MAX_BOUNCES = 10;
+    constexpr float RR_THRESHOLD = 1;
+    render<<<GRID_SIZE, BLOCK_SIZE>>>(camera, scene, NUM_SAMPLES, MAX_BOUNCES, RR_THRESHOLD,
+                                      WIDTH, HEIGHT, d_rand_state, d_framebuffer);
     CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaDeviceSynchronize());
     profiler.stop();

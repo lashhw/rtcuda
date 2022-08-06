@@ -15,9 +15,9 @@ struct Vec3 {
     __host__ __device__ Vec3& operator*=(float t);
     __host__ __device__ Vec3& operator/=(float t);
 
-    __host__ __device__ bool is_all_zeros() { return x == 0.f && y == 0.f && z == 0.f; }
-    __host__ __device__ float length_squared() const { return x * x + y * y + z * z; }
+    __host__ __device__ float max() const { return fmaxf(fmaxf(x, y), z); }
     __host__ __device__ float length() const { return sqrtf(x * x + y * y + z * z); }
+    __host__ __device__ float length_squared() const { return x * x + y * y + z * z; }
     __host__ __device__ Vec3 unit_vector() const;
     __host__ __device__ void unit_vector_inplace();
     __host__ __device__ void sqrt_inplace();
