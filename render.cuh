@@ -44,36 +44,35 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
         if (!light.is_delta()) {
             // sample a direction based on material's BSDF
             Vec3 unit_n = isect.unit_n;
-            Vec3 f, unit_wi;
+            Vec3 unit_wi;
             float scattering_pdf;
-            if (d_mat->sample_f(unit_wo, rand_state, unit_n, f, unit_wi, scattering_pdf)) {
-                f *= dot(unit_wi, unit_n);
+            Vec3 f = d_mat->sample_f(unit_wo, rand_state, unit_n, unit_wi, scattering_pdf);
+            f *= dot(unit_wi, unit_n);
 
-                // if BSDF is specular, there is no need to apply MIS
-                float weight = 1.f;
-                if (!d_mat->is_specular()) {
-                    float light_pdf = light.pdf_Li(isect, unit_wi);
-                    if (light_pdf == 0.f) return L * scene.num_lights;
-                    weight = power_heuristic(scattering_pdf, light_pdf);
-                }
-
-                Vec3 Li;
-                bool Li_is_valid = false;
-
-                Ray light_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
-                Intersection light_isect;
-                Primitive *d_light_isect_primitive;
-                if (scene.bvh.traverse(stack, light_ray, light_isect, d_light_isect_primitive)) {
-                    Light *d_isect_area_light = d_light_isect_primitive->d_area_light;
-                    if (d_isect_area_light == &light) {
-                        Li = d_isect_area_light->L;
-                        Li_is_valid = true;
-                    }
-                } else {
-                    if (light.get_Le(unit_wi, Li)) Li_is_valid = true;
-                }
-                if (Li_is_valid) L += f * Li * weight / scattering_pdf;
+            // if BSDF is specular, there is no need to apply MIS
+            float weight = 1.f;
+            if (!d_mat->is_specular()) {
+                float light_pdf = light.pdf_Li(isect, unit_wi);
+                if (light_pdf == 0.f) return L * scene.num_lights;
+                weight = power_heuristic(scattering_pdf, light_pdf);
             }
+
+            Vec3 Li;
+            bool Li_is_valid = false;
+
+            Ray light_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
+            Intersection light_isect;
+            Primitive *d_light_isect_primitive;
+            if (scene.bvh.traverse(stack, light_ray, light_isect, d_light_isect_primitive)) {
+                Light *d_isect_area_light = d_light_isect_primitive->d_area_light;
+                if (d_isect_area_light == &light) {
+                    Li = d_isect_area_light->L;
+                    Li_is_valid = true;
+                }
+            } else {
+                if (light.get_Le(unit_wi, Li)) Li_is_valid = true;
+            }
+            if (Li_is_valid) L += f * Li * weight / scattering_pdf;
         }
     }
 
@@ -118,10 +117,9 @@ __device__ Vec3 Lo(const Ray &ray, const Scene &scene, curandState &rand_state, 
 
         // sample BSDF to get new path direction
         Vec3 unit_n = isect.unit_n;
-        Vec3 f, unit_wi;
+        Vec3 unit_wi;
         float pdf;
-        bool scattered = d_mat->sample_f(cur_ray.unit_d, rand_state, unit_n, f, unit_wi, pdf);
-        if (!scattered) break;
+        Vec3 f = d_mat->sample_f(cur_ray.unit_d, rand_state, unit_n, unit_wi, pdf);
         beta *= f * dot(unit_wi, unit_n) / pdf;
         cur_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
     }

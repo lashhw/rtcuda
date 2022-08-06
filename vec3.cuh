@@ -4,6 +4,7 @@
 struct Vec3 {
     __host__ __device__ Vec3() { }
     __host__ __device__ constexpr Vec3(float x, float y, float z) : x(x), y(y), z(z) { }
+    __host__ __device__ constexpr Vec3(float xyz) : x(xyz), y(xyz), z(xyz) { }
 
     __host__ __device__ Vec3 operator-() const { return Vec3(-x, -y, -z); }
 
@@ -73,7 +74,13 @@ __host__ __device__ Vec3 reflect(const Vec3 &v, const Vec3 &unit_n) {
 __host__ __device__ Vec3 refract(const Vec3 &unit_v, const Vec3 &unit_n, double eta_ratio) {
     double cos_theta = -dot(unit_v, unit_n);
     Vec3 v_parallel = eta_ratio * (unit_v + cos_theta * unit_n);
-    Vec3 v_perp = -sqrtf(1.f-v_parallel.length_squared()) * unit_n;
+    Vec3 v_perp = -sqrtf(1.f - v_parallel.length_squared()) * unit_n;
+    return v_parallel + v_perp;
+}
+
+__host__ __device__ Vec3 refract(const Vec3 &unit_v, const Vec3 &unit_n, double eta_ratio, float cos_theta) {
+    Vec3 v_parallel = eta_ratio * (unit_v + cos_theta * unit_n);
+    Vec3 v_perp = -sqrtf(1.f - v_parallel.length_squared()) * unit_n;
     return v_parallel + v_perp;
 }
 
