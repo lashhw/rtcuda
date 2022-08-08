@@ -13,13 +13,13 @@ struct Bvh {
         };
     };
 
-    Bvh(const std::vector<Triangle> &shapes, const std::vector<Primitive> &primitives);
+    Bvh(const std::vector<Triangle> &triangles, const std::vector<Primitive> &primitives);
     __device__ bool intersect_leaf(const Node *d_node_ptr, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const;
     __device__ bool intersect_leaf(const Node *d_node_ptr, Ray &ray) const;
-    __device__ bool intersect_leaf_exclude(const Node *d_node_ptr, const Triangle *d_excluded_shape, Ray &ray) const;
+    __device__ bool intersect_leaf_exclude(const Node *d_node_ptr, const Triangle *d_excluded_triangle, Ray &ray) const;
     __device__ bool traverse(DeviceStack &stack, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const;
     __device__ bool traverse(DeviceStack &stack, Ray &ray) const;
-    __device__ bool traverse_exclude(const Triangle *d_excluded_shape, DeviceStack &stack, Ray &ray) const;
+    __device__ bool traverse_exclude(const Triangle *d_excluded_triangle, DeviceStack &stack, Ray &ray) const;
 
     int num_primitives;
     Primitive *d_primitives;
@@ -28,10 +28,10 @@ struct Bvh {
     int max_depth;
 };
 
-Bvh::Bvh(const std::vector<Triangle> &shapes, const std::vector<Primitive> &primitives)
-    : num_primitives(shapes.size()) {
-    // shapes must be the same size as primitives
-    assert(shapes.size() == primitives.size());
+Bvh::Bvh(const std::vector<Triangle> &triangles, const std::vector<Primitive> &primitives)
+    : num_primitives(triangles.size()) {
+    // triangles must be the same size as primitives
+    assert(triangles.size() == primitives.size());
 
     // allocate temporary memory for BVH construction
     profiler.start("Allocating temporary memory for BVH construction");
@@ -55,9 +55,9 @@ Bvh::Bvh(const std::vector<Triangle> &shapes, const std::vector<Primitive> &prim
     profiler.start("Initializing bounding boxes and centers");
     h_nodes[0].bbox.reset();
     for (int i = 0; i < num_primitives; i++) {
-        h_bboxes[i] = shapes[i].bounding_box();
+        h_bboxes[i] = triangles[i].bounding_box();
         h_nodes[0].bbox.extend(h_bboxes[i]);
-        h_centers[i] = shapes[i].center();
+        h_centers[i] = triangles[i].center();
     }
     profiler.stop();
 
@@ -226,7 +226,7 @@ __device__ bool Bvh::intersect_leaf(const Node *d_node_ptr, Ray &ray, Intersecti
     for (int i = d_node_ptr->first_primitive_index;
          i < d_node_ptr->first_primitive_index + d_node_ptr->num_primitives;
          i++) {
-        if (d_primitives[i].d_shape->intersect(ray, isect)) {
+        if (d_primitives[i].d_triangle->intersect(ray, isect)) {
             hit_anything = true;
             d_isect_primitive = &d_primitives[i];
             ray.tmax = isect.t;
@@ -241,19 +241,19 @@ __device__ bool Bvh::intersect_leaf(const Node *d_node_ptr, Ray &ray) const {
     for (int i = d_node_ptr->first_primitive_index;
          i < d_node_ptr->first_primitive_index + d_node_ptr->num_primitives;
          i++) {
-        if (d_primitives[i].d_shape->intersect(ray)) {
+        if (d_primitives[i].d_triangle->intersect(ray)) {
             return true;
         }
     }
     return false;
 }
 
-// any-hit intersector but exclude d_excluded_shape
-__device__ bool Bvh::intersect_leaf_exclude(const Bvh::Node *d_node_ptr, const Triangle *d_excluded_shape, Ray &ray) const {
+// any-hit intersector but exclude d_excluded_triangle
+__device__ bool Bvh::intersect_leaf_exclude(const Bvh::Node *d_node_ptr, const Triangle *d_excluded_triangle, Ray &ray) const {
     for (int i = d_node_ptr->first_primitive_index;
          i < d_node_ptr->first_primitive_index + d_node_ptr->num_primitives;
          i++) {
-        if (d_primitives[i].d_shape->intersect(ray) && d_primitives[i].d_shape != d_excluded_shape) {
+        if (d_primitives[i].d_triangle->intersect(ray) && d_primitives[i].d_triangle != d_excluded_triangle) {
             return true;
         }
     }
@@ -315,8 +315,8 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect,
     }
 
     if (hit_anything) {
-        isect.p = d_isect_primitive->d_shape->p(isect.u, isect.v);
-        isect.unit_n = -d_isect_primitive->d_shape->n.unit_vector();
+        isect.p = d_isect_primitive->d_triangle->p(isect.u, isect.v);
+        isect.unit_n = -d_isect_primitive->d_triangle->n.unit_vector();
     }
 
     return hit_anything;
@@ -378,11 +378,11 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray) const {
     return false;
 }
 
-// any-hit traverser but exclude d_excluded_shape
-__device__ bool Bvh::traverse_exclude(const Triangle *d_excluded_shape, DeviceStack &stack, Ray &ray) const {
+// any-hit traverser but exclude d_excluded_triangle
+__device__ bool Bvh::traverse_exclude(const Triangle *d_excluded_triangle, DeviceStack &stack, Ray &ray) const {
     stack.reset();
 
-    if (d_nodes[0].is_leaf()) return intersect_leaf_exclude(&d_nodes[0], d_excluded_shape, ray);
+    if (d_nodes[0].is_leaf()) return intersect_leaf_exclude(&d_nodes[0], d_excluded_triangle, ray);
 
     AABBIntersector aabb_intersector(ray);
 
@@ -393,7 +393,7 @@ __device__ bool Bvh::traverse_exclude(const Triangle *d_excluded_shape, DeviceSt
         float entry_left;
         if (aabb_intersector.intersect(left_node_ptr->bbox, entry_left)) {
             if (left_node_ptr->is_leaf()) {
-                if (intersect_leaf_exclude(left_node_ptr, d_excluded_shape, ray)) return true;
+                if (intersect_leaf_exclude(left_node_ptr, d_excluded_triangle, ray)) return true;
                 left_node_ptr = nullptr;
             }
         } else {
@@ -403,7 +403,7 @@ __device__ bool Bvh::traverse_exclude(const Triangle *d_excluded_shape, DeviceSt
         float entry_right;
         if (aabb_intersector.intersect(right_node_ptr->bbox, entry_right)) {
             if (right_node_ptr->is_leaf()) {
-                if (intersect_leaf_exclude(right_node_ptr, d_excluded_shape, ray)) return true;
+                if (intersect_leaf_exclude(right_node_ptr, d_excluded_triangle, ray)) return true;
                 right_node_ptr = nullptr;
             }
         } else {

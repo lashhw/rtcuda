@@ -3,10 +3,10 @@
 
 struct Primitive {
     Primitive() { }
-    Primitive(Triangle *d_shape, Material *d_mat, Light *d_area_light = NULL)
-        : d_shape(d_shape), d_mat(d_mat), d_area_light(d_area_light) { }
+    Primitive(Triangle *d_triangle, Material *d_mat, Light *d_area_light = NULL)
+        : d_triangle(d_triangle), d_mat(d_mat), d_area_light(d_area_light) { }
 
-    Triangle *d_shape;
+    Triangle *d_triangle;
     Material *d_mat;
     Light *d_area_light;
 };

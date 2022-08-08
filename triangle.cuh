@@ -1,5 +1,5 @@
-#ifndef RTCUDA_SHAPE_CUH
-#define RTCUDA_SHAPE_CUH
+#ifndef RTCUDA_TRIANGLE_CUH
+#define RTCUDA_TRIANGLE_CUH
 
 struct Triangle {
     __host__ __device__ Triangle() { }
@@ -85,4 +85,4 @@ __device__ float Triangle::area() {
     return 0.5 * n.length();
 }
 
-#endif //RTCUDA_SHAPE_CUH
+#endif //RTCUDA_TRIANGLE_CUH

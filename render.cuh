@@ -27,7 +27,7 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
 
                 // test whether the ray is occluded
                 Ray light_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi, light_t);
-                if (!scene.bvh.traverse_exclude(light.d_shape, stack, light_ray)) {
+                if (!scene.bvh.traverse_exclude(light.d_triangle, stack, light_ray)) {
                     if (light.is_delta()) {
                         L += f * Li / light_pdf;
                     } else {

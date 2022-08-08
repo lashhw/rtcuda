@@ -25,7 +25,7 @@
 #include "aabb_intersector.cuh"
 #include "intersection.hpp"
 #include "material.cuh"
-#include "shape.cuh"
+#include "triangle.cuh"
 #include "device_stack.cuh"
 #include "light.cuh"
 #include "primitive.cuh"
@@ -72,61 +72,61 @@ int main() {
 
     // convert bunny to triangles
     profiler.start("Converting bunny to triangles");
-    std::vector<Triangle> shapes;
+    std::vector<Triangle> triangles;
     std::vector<Material*> material_ptrs;
     for (int i = 0; i < f_index.size(); i++) {
         const std::vector<size_t> &face = f_index[i];
-        shapes.emplace_back(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
-                            Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
-                            Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]));
+        triangles.emplace_back(Vec3(v_pos[face[0]][0], v_pos[face[0]][1], v_pos[face[0]][2]),
+                               Vec3(v_pos[face[1]][0], v_pos[face[1]][1], v_pos[face[1]][2]),
+                               Vec3(v_pos[face[2]][0], v_pos[face[2]][1], v_pos[face[2]][2]));
         material_ptrs.push_back(d_brown);
     }
     profiler.stop();
 
     // create walls
-    shapes.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f));
+    triangles.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f));
     material_ptrs.push_back(d_red);
-    shapes.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f));
+    triangles.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f));
     material_ptrs.push_back(d_red);
-    shapes.emplace_back(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
+    triangles.emplace_back(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
     material_ptrs.push_back(d_green);
-    shapes.emplace_back(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f));
+    triangles.emplace_back(Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f));
     material_ptrs.push_back(d_green);
-    shapes.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f));
+    triangles.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(1.0f, 0.0f, -1.0f));
     material_ptrs.push_back(d_white);
-    shapes.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f));
+    triangles.emplace_back(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f));
     material_ptrs.push_back(d_white);
-    shapes.emplace_back(Vec3(0.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f));
+    triangles.emplace_back(Vec3(0.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, 0.0f), Vec3(1.0f, 1.0f, -1.0f));
     material_ptrs.push_back(d_white);
-    shapes.emplace_back(Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
+    triangles.emplace_back(Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
     material_ptrs.push_back(d_white);
-    shapes.emplace_back(Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
+    triangles.emplace_back(Vec3(0.0f, 0.0f, -1.0f), Vec3(1.0f, 0.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
     material_ptrs.push_back(d_white);
-    shapes.emplace_back(Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
+    triangles.emplace_back(Vec3(0.0f, 0.0f, -1.0f), Vec3(0.0f, 1.0f, -1.0f), Vec3(1.0f, 1.0f, -1.0f));
     material_ptrs.push_back(d_white);
 
     // create area light triangles
-    std::unordered_map<int, Vec3> shape_idx_to_L;
-    shapes.emplace_back(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.6f));
+    std::unordered_map<int, Vec3> triangle_idx_to_L;
+    triangles.emplace_back(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.4f), Vec3(0.6f, 0.999f, -0.6f));
     material_ptrs.push_back(d_white);
-    shape_idx_to_L[shapes.size() - 1] = Vec3(15.f, 15.f, 15.f);
-    shapes.emplace_back(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.4f, 0.999f, -0.6f), Vec3(0.6f, 0.999f, -0.6f));
+    triangle_idx_to_L[triangles.size() - 1] = Vec3(15.f, 15.f, 15.f);
+    triangles.emplace_back(Vec3(0.4f, 0.999f, -0.4f), Vec3(0.4f, 0.999f, -0.6f), Vec3(0.6f, 0.999f, -0.6f));
     material_ptrs.push_back(d_white);
-    shape_idx_to_L[shapes.size() - 1] = Vec3(15.f, 15.f, 15.f);
+    triangle_idx_to_L[triangles.size() - 1] = Vec3(15.f, 15.f, 15.f);
 
-    // move shapes to device
-    int num_shapes = shapes.size();
-    Triangle *d_shapes;
-    CHECK_CUDA(cudaMalloc(&d_shapes, num_shapes * sizeof(Triangle)));
-    CHECK_CUDA(cudaMemcpy(d_shapes, shapes.data(), num_shapes * sizeof(Triangle), cudaMemcpyHostToDevice));
+    // move triangles to device
+    int num_triangles = triangles.size();
+    Triangle *d_triangles;
+    CHECK_CUDA(cudaMalloc(&d_triangles, num_triangles * sizeof(Triangle)));
+    CHECK_CUDA(cudaMemcpy(d_triangles, triangles.data(), num_triangles * sizeof(Triangle), cudaMemcpyHostToDevice));
 
     // create lights on host
     std::vector<Light> lights;
     // lights.push_back(Light::make_point_light(Vec3(0.7f, 0.15f, -0.6f), Vec3(0.5f, 0.5f, 0.5f)));
-    std::unordered_map<int, int> shape_idx_to_light_idx;
-    for (const auto x : shape_idx_to_L) {
-        lights.push_back(Light::make_area_light(&d_shapes[x.first], x.second));
-        shape_idx_to_light_idx[x.first] = lights.size() - 1;
+    std::unordered_map<int, int> triangle_idx_to_light_idx;
+    for (const auto x : triangle_idx_to_L) {
+        lights.push_back(Light::make_area_light(&d_triangles[x.first], x.second));
+        triangle_idx_to_light_idx[x.first] = lights.size() - 1;
     }
 
     // move lights to device
@@ -138,17 +138,17 @@ int main() {
 
     // create primitives on host
     std::vector<Primitive> primitives;
-    for (int i = 0; i < num_shapes; i++) {
-        if (shape_idx_to_light_idx.count(i) != 0) {
-            primitives.emplace_back(&d_shapes[i], material_ptrs[i], &d_lights[shape_idx_to_light_idx[i]]);
+    for (int i = 0; i < num_triangles; i++) {
+        if (triangle_idx_to_light_idx.count(i) != 0) {
+            primitives.emplace_back(&d_triangles[i], material_ptrs[i], &d_lights[triangle_idx_to_light_idx[i]]);
         } else {
-            primitives.emplace_back(&d_shapes[i], material_ptrs[i]);
+            primitives.emplace_back(&d_triangles[i], material_ptrs[i]);
         }
     }
 
     // build bvh
-    Bvh bvh(shapes, primitives);
-    shapes.clear();
+    Bvh bvh(triangles, primitives);
+    triangles.clear();
     primitives.clear();
 
     // create scene
