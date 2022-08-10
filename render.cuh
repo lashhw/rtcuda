@@ -410,13 +410,16 @@ void render(int width, int height, int num_samples, int max_bounces,
         CHECK_CUDA(cudaDeviceSynchronize());
 
         compact(NUM_WORKING_PATHS, d_mat_pending_ptr, d_mat_pending_valid_ptr, d_mat_pending_compact_ptr, &num_mat_pending);
+        compact(NUM_WORKING_PATHS, d_gen_pending_ptr, d_gen_pending_valid_ptr, d_gen_pending_compact_ptr, &num_gen_pending);
+        // termination condition (unable to spawn any ray)
+        if (num_gen_pending == NUM_WORKING_PATHS && camera_ray_start_id >= camera_ray_end_id) break;
+
         if (num_mat_pending > 0) {
             mat<<<(num_mat_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
             CHECK_CUDA(cudaGetLastError());
             CHECK_CUDA(cudaDeviceSynchronize());
         }
 
-        compact(NUM_WORKING_PATHS, d_gen_pending_ptr, d_gen_pending_valid_ptr, d_gen_pending_compact_ptr, &num_gen_pending);
         if (num_gen_pending > 0) {
             gen<<<(num_gen_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(camera_ray_start_id);
             CHECK_CUDA(cudaGetLastError());
@@ -425,22 +428,19 @@ void render(int width, int height, int num_samples, int max_bounces,
         }
 
         compact(NUM_WORKING_PATHS, d_ah_pending_ptr, d_ah_pending_valid_ptr, d_ah_pending_compact_ptr, &num_ah_pending);
+        compact(3 * NUM_WORKING_PATHS, d_ch_pending_ptr, d_ch_pending_valid_ptr, d_ch_pending_compact_ptr, &num_ch_pending);
+
         if (num_ah_pending > 0) {
             ah<<<(num_ah_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
             CHECK_CUDA(cudaGetLastError());
             CHECK_CUDA(cudaDeviceSynchronize());
         }
 
-        compact(3 * NUM_WORKING_PATHS, d_ch_pending_ptr, d_ch_pending_valid_ptr, d_ch_pending_compact_ptr, &num_ch_pending);
         if (num_ch_pending > 0) {
             ch<<<(num_ch_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
             CHECK_CUDA(cudaGetLastError());
             CHECK_CUDA(cudaDeviceSynchronize());
         }
-
-        // termination condition
-        // TODO: use faster termination condition
-        if (num_gen_pending == NUM_WORKING_PATHS && camera_ray_start_id >= camera_ray_end_id) break;
     }
 
     // post-process framebuffer
