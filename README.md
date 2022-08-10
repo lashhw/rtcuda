@@ -1,9 +1,11 @@
-# raytracer_cuda
+# rtcuda
 my implementation of physically based path tracer in CUDA
 
 ## Build
 ```bash
-nvcc main.cu
+mkdir build
+cd build
+nvcc ../main.cu
 ```
 
 ## Usage
@@ -12,6 +14,3 @@ nvcc main.cu
 ```
 
 ## Result
-| Box with Balls (10000 rays/pixel)    |
-|--------------------------------------|
-| ![](https://i.imgur.com/pol1iCW.png) |
