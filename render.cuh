@@ -88,7 +88,7 @@ __global__ void init(int max_bounces,
         if (hit_anything) {
             Light *d_isect_area_light = d_ray_payload->d_isect_primitive[thread_id]->d_area_light;
             if (d_isect_area_light) {
-                d_framebuffer[pixel_idx] += d_isect_area_light->L;
+                Vec3::atomic_add(&d_framebuffer[pixel_idx], d_isect_area_light->L);
             }
         } else {
             // TODO: add environment light
@@ -278,7 +278,7 @@ __global__ void ah(int *d_ah_pending_compact,
     bool hit_anything = scene.bvh.traverse(d_target_triangle, stack, ray);
 
     if (!hit_anything) {
-        d_framebuffer[d_ray_payload->pixel_idx[ah_ray_id]] += d_ray_payload->L[ah_ray_id];
+        Vec3::atomic_add(&d_framebuffer[d_ray_payload->pixel_idx[ah_ray_id]], d_ray_payload->L[ah_ray_id]);
     }
 }
 
@@ -302,7 +302,7 @@ __global__ void ch(int *d_ch_pending_compact,
     if (d_ray_payload->type[ch_ray_id] == CH_SHADOW_RAY) {
         if (hit_anything) {
             if (d_ray_payload->d_target_triangle[ch_ray_id] == d_isect_primitive->d_triangle) {
-                d_framebuffer[d_ray_payload->pixel_idx[ch_ray_id]] += d_ray_payload->L[ch_ray_id];
+                Vec3::atomic_add(&d_framebuffer[d_ray_payload->pixel_idx[ch_ray_id]], d_ray_payload->L[ch_ray_id]);
             }
         } else {
             // TODO: add environment light
