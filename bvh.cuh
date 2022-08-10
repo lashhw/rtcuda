@@ -13,6 +13,7 @@ struct Bvh {
         };
     };
 
+    __device__ Bvh() { }
     Bvh(const std::vector<Triangle> &triangles, const std::vector<Primitive> &primitives);
     __device__ bool intersect_leaf(const Node *d_node_ptr, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const;
     __device__ bool intersect_leaf(const Triangle *d_excluded_triangle, const Node *d_node_ptr, Ray &ray) const;

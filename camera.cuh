@@ -2,6 +2,7 @@
 #define RTCUDA_CAMERA_CUH
 
 struct Camera {
+    Camera() { }
     Camera(Vec3 lookfrom, Vec3 lookat, Vec3 up, float vfov, float aspect_ratio);
     __device__ Ray get_ray(float x, float y) const;
 
