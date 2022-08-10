@@ -35,15 +35,18 @@ __managed__ int num_gen_pending;
 __managed__ int num_ah_pending;
 __managed__ int num_ch_pending;
 
-__global__ void init_pixels(int num_pixels,
-                            int rand_seed,
-                            curandState *d_rand_states,
-                            Vec3 *d_framebuffer) {
+__global__ void init_framebuffer(int num_pixels, Vec3 *d_framebuffer) {
     int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (thread_id >= num_pixels) return;
 
-    curand_init(rand_seed, thread_id, 0, &d_rand_states[thread_id]);
     d_framebuffer[thread_id] = Vec3::make_zeros();
+}
+
+__global__ void init_rand_states(int rand_seed, curandState *d_rand_states) {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= NUM_WORKING_PATHS) return;
+
+    curand_init(rand_seed, thread_id, 0, &d_rand_states[thread_id]);
 }
 
 __global__ void init_ray_payload(RayPayload *d_ray_payload) {
@@ -102,7 +105,7 @@ __global__ void init(int max_bounces,
         float beta_max = beta.max();
         if (beta_max < RR_THRESHOLD) {
             float p_terminate = fmaxf(0.05f, 1 - beta_max);
-            if (curand_uniform(&d_rand_states[pixel_idx]) < p_terminate) {
+            if (curand_uniform(&d_rand_states[thread_id]) < p_terminate) {
                 continute_path = false;
             } else {
                 d_ray_payload->beta[thread_id] = beta / (1 - p_terminate);
@@ -138,7 +141,7 @@ __global__ void mat(int *d_mat_pending_compact,
     Primitive *d_isect_primitive = d_ray_payload->d_isect_primitive[path_ray_id];
     Material *d_mat = d_isect_primitive->d_mat;
     Vec3 multiplier = d_ray_payload->beta[path_ray_id] * scene.num_lights;
-    curandState &rand_state = d_rand_states[pixel_idx];
+    curandState &rand_state = d_rand_states[path_ray_id];
 
     // generate next ray
     {
@@ -252,8 +255,8 @@ __global__ void gen(int camera_ray_start_id,
 
     d_ray_payload->type[path_ray_id] = PATH_RAY;
     d_ray_payload->pixel_idx[path_ray_id] = pixel_idx;
-    d_ray_payload->ray[path_ray_id] = camera.get_ray((i + curand_uniform(&d_rand_states[pixel_idx])) / width,
-                                                     (j + curand_uniform(&d_rand_states[pixel_idx])) / height);
+    d_ray_payload->ray[path_ray_id] = camera.get_ray((i + curand_uniform(&d_rand_states[path_ray_id])) / width,
+                                                     (j + curand_uniform(&d_rand_states[path_ray_id])) / height);
     d_ray_payload->valid[path_ray_id] = true;
     d_ray_payload->bounces[path_ray_id] = 0;
     d_ray_payload->beta[path_ray_id] = Vec3::make_ones();
@@ -382,13 +385,15 @@ void render(int width, int height, int num_samples, int max_bounces,
     CHECK_CUDA(cudaMalloc(&d_ch_pending_compact, 3 * NUM_WORKING_PATHS * sizeof(int)));
     CHECK_CUDA(cudaMalloc(&d_ray_payload, sizeof(RayPayload)));
 
-    // initialize d_rand_states and d_framebuffer
-    constexpr int RAND_SEED = 1;
+    // initialize d_framebuffer
     constexpr int INIT_BLOCK_SIZE = 64;
-    init_pixels<<<(num_pixels + INIT_BLOCK_SIZE - 1) / INIT_BLOCK_SIZE, INIT_BLOCK_SIZE>>>(num_pixels,
-                                                                                           RAND_SEED,
-                                                                                           d_rand_states,
-                                                                                           d_framebuffer);
+    init_framebuffer<<<(num_pixels + INIT_BLOCK_SIZE - 1) / INIT_BLOCK_SIZE, INIT_BLOCK_SIZE>>>(num_pixels, d_framebuffer);
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
+
+    // initialize d_rand_states
+    constexpr int RAND_SEED = 1;
+    init_rand_states<<<(NUM_WORKING_PATHS + INIT_BLOCK_SIZE - 1) / INIT_BLOCK_SIZE, INIT_BLOCK_SIZE>>>(RAND_SEED, d_rand_states);
     CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaDeviceSynchronize());
 
@@ -402,7 +407,6 @@ void render(int width, int height, int num_samples, int max_bounces,
     int camera_ray_end_id = num_pixels * num_samples;
 
     // start rendering
-    profiler.start("Rendering");
     constexpr int BLOCK_SIZE = 64;
     while (true) {
         init<<<(NUM_WORKING_PATHS + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(max_bounces,
@@ -473,7 +477,6 @@ void render(int width, int height, int num_samples, int max_bounces,
         // termination condition
         if (num_gen_pending == NUM_WORKING_PATHS && camera_ray_start_id >= camera_ray_end_id) break;
     }
-    profiler.stop();
 
     // post-process framebuffer
     post_process_framebuffer<<<(num_pixels + BLOCK_SIZE - 1), BLOCK_SIZE>>>(num_pixels,

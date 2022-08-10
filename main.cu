@@ -166,10 +166,12 @@ int main() {
                   ASPECT_RATIO);
 
     // render
-    constexpr int NUM_SAMPLES = 1;
+    constexpr int NUM_SAMPLES = 10;
     constexpr int MAX_BOUNCES = 10;
     std::vector<Vec3> framebuffer;
+    profiler.start("Rendering");
     render(WIDTH, HEIGHT, NUM_SAMPLES, MAX_BOUNCES, camera, scene, framebuffer);
+    profiler.stop();
 
     // write image
     profiler.start("Writing image");
