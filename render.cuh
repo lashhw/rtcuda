@@ -1,15 +1,8 @@
 #ifndef RTCUDA_RENDER_CUH
 #define RTCUDA_RENDER_CUH
 
-enum RayType {
-    PATH_RAY,
-    AH_SHADOW_RAY,
-    CH_SHADOW_RAY
-};
-
 // use structure-of-array for memory coalescing
-struct RayPayload {
-    RayType type[3 * NUM_WORKING_PATHS];
+struct RayPool {
     int pixel_idx[3 * NUM_WORKING_PATHS];
     Ray ray[3 * NUM_WORKING_PATHS];
 };
@@ -52,7 +45,7 @@ __constant__ int *d_gen_pending_compact;
 __constant__ int *d_ah_pending_compact;
 __constant__ int *d_ch_pending_compact;
 
-__constant__ RayPayload *d_ray_payload;
+__constant__ RayPool *d_ray_pool;
 __constant__ PathRayPayload *d_path_ray_payload;
 __constant__ ShadowRayPayload *d_ah_shadow_ray_payload;
 __constant__ ShadowRayPayload *d_ch_shadow_ray_payload;
@@ -98,16 +91,14 @@ __global__ void init() {
     d_ch_pending_valid[NUM_WORKING_PATHS + thread_id] = false;
     d_ch_pending_valid[2 * NUM_WORKING_PATHS + thread_id] = false;
 
-    int pixel_idx = d_ray_payload->pixel_idx[thread_id];
     bool hit_anything = d_path_ray_payload->hit_anything[thread_id];
     int bounces = d_path_ray_payload->bounces[thread_id];
-    Vec3 beta = d_path_ray_payload->beta[thread_id];
 
     if (bounces == 0) {
         if (hit_anything) {
             Light *d_isect_area_light = d_path_ray_payload->d_isect_primitive[thread_id]->d_area_light;
             if (d_isect_area_light) {
-                Vec3::atomic_add(&d_framebuffer[pixel_idx], d_isect_area_light->L);
+                Vec3::atomic_add(&d_framebuffer[d_ray_pool->pixel_idx[thread_id]], d_isect_area_light->L);
             }
         } else {
             // TODO: add environment light
@@ -118,6 +109,7 @@ __global__ void init() {
 
     // Russian roulette
     if (continute_path && hit_anything && bounces > RR_START) {
+        Vec3 beta = d_path_ray_payload->beta[thread_id];
         float beta_max = beta.max();
         if (beta_max < RR_THRESHOLD) {
             float p_terminate = fmaxf(0.05f, 1 - beta_max);
@@ -130,6 +122,8 @@ __global__ void init() {
         }
     }
 
+    d_path_ray_payload->bounces[thread_id] = bounces + 1;
+
     if (continute_path) {
         if (hit_anything) {
             d_mat_pending[thread_id] = thread_id;
@@ -139,8 +133,6 @@ __global__ void init() {
         d_gen_pending[thread_id] = thread_id;
         d_gen_pending_valid[thread_id] = true;
     }
-
-    d_path_ray_payload->bounces[thread_id] = bounces + 1;
 }
 
 __global__ void mat() {
@@ -149,22 +141,24 @@ __global__ void mat() {
 
     int path_ray_id = d_mat_pending_compact[thread_id];
 
-    int pixel_idx = d_ray_payload->pixel_idx[path_ray_id];
-    Vec3 unit_wo = d_ray_payload->ray[path_ray_id].unit_d;
+    int pixel_idx = d_ray_pool->pixel_idx[path_ray_id];
+    Vec3 unit_wo = d_ray_pool->ray[path_ray_id].unit_d;
     Intersection isect = d_path_ray_payload->isect[path_ray_id];
     Primitive *d_isect_primitive = d_path_ray_payload->d_isect_primitive[path_ray_id];
     Material *d_mat = d_isect_primitive->d_mat;
     Vec3 multiplier = d_path_ray_payload->beta[path_ray_id] * d_scene.num_lights;
-    curandState &rand_state = d_rand_states[path_ray_id];
+
+    // remember to store rand state back to global memory!!
+    curandState local_rand_state = d_rand_states[path_ray_id];
 
     // generate next ray
     {
         Vec3 unit_n = isect.unit_n, unit_wi;
         float pdf;
-        Vec3 f = d_mat->sample_f(unit_wo, rand_state, unit_n, unit_wi, pdf);
+        Vec3 f = d_mat->sample_f(unit_wo, local_rand_state, unit_n, unit_wi, pdf);
 
-        // generate PATH_RAY
-        d_ray_payload->ray[path_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
+        // update PATH_RAY
+        d_ray_pool->ray[path_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
         d_path_ray_payload->beta[path_ray_id] *= f * dot(unit_wi, unit_n) / pdf;
 
         // add to d_ch_pending
@@ -173,8 +167,11 @@ __global__ void mat() {
     }
 
     // uniformly sample one light source
-    if (d_scene.num_lights == 0) return;
-    int light_idx = min((int)(curand_uniform(&rand_state) * d_scene.num_lights),
+    if (d_scene.num_lights == 0) {
+        d_rand_states[path_ray_id] = local_rand_state;
+        return;
+    }
+    int light_idx = min((int)(curand_uniform(&local_rand_state) * d_scene.num_lights),
                         d_scene.num_lights - 1);
     const Light light = d_scene.d_lights[light_idx];
 
@@ -182,7 +179,7 @@ __global__ void mat() {
     {
         Vec3 unit_wi, Li;
         float light_t, light_pdf;
-        if (light.sample_Li(isect, rand_state, unit_wi, Li, light_t, light_pdf)) {
+        if (light.sample_Li(isect, local_rand_state, unit_wi, Li, light_t, light_pdf)) {
             Vec3 unit_n = dot(isect.unit_n, unit_wi) > 0.f ? isect.unit_n : -isect.unit_n;
             Vec3 f;
             float scattering_pdf;
@@ -191,9 +188,8 @@ __global__ void mat() {
 
                 // generate AH_SHADOW_RAY
                 int ah_ray_id = NUM_WORKING_PATHS + path_ray_id;
-                d_ray_payload->type[ah_ray_id] = AH_SHADOW_RAY;
-                d_ray_payload->pixel_idx[ah_ray_id] = pixel_idx;
-                d_ray_payload->ray[ah_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi, light_t);
+                d_ray_pool->pixel_idx[ah_ray_id] = pixel_idx;
+                d_ray_pool->ray[ah_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi, light_t);
                 d_ah_shadow_ray_payload->d_target_triangle[path_ray_id] = light.d_triangle;
                 if (light.is_delta()) {
                     d_ah_shadow_ray_payload->L[path_ray_id] = multiplier * f * Li / light_pdf;
@@ -215,22 +211,24 @@ __global__ void mat() {
             // sample a direction based on material's BSDF
             Vec3 unit_n = isect.unit_n, unit_wi;
             float scattering_pdf;
-            Vec3 f = d_mat->sample_f(unit_wo, rand_state, unit_n, unit_wi, scattering_pdf);
+            Vec3 f = d_mat->sample_f(unit_wo, local_rand_state, unit_n, unit_wi, scattering_pdf);
             f *= dot(unit_wi, unit_n);
 
             // if BSDF is specular, there is no need to apply MIS
             float weight = 1.f;
             if (!d_mat->is_specular()) {
                 float light_pdf = light.pdf_Li(isect, unit_wi);
-                if (light_pdf == 0.f) return;
+                if (light_pdf == 0.f) {
+                    d_rand_states[path_ray_id] = local_rand_state;
+                    return;
+                }
                 weight = power_heuristic(scattering_pdf, light_pdf);
             }
 
             // generate CH_SHADOW_RAY
             int ch_ray_id = 2 * NUM_WORKING_PATHS + path_ray_id;
-            d_ray_payload->type[ch_ray_id] = CH_SHADOW_RAY;
-            d_ray_payload->pixel_idx[ch_ray_id] = pixel_idx;
-            d_ray_payload->ray[ch_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
+            d_ray_pool->pixel_idx[ch_ray_id] = pixel_idx;
+            d_ray_pool->ray[ch_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
             d_ch_shadow_ray_payload->d_target_triangle[path_ray_id] = d_isect_primitive->d_triangle;
             d_ch_shadow_ray_payload->L[path_ray_id] = multiplier * f * light.L * weight / scattering_pdf;
 
@@ -241,6 +239,8 @@ __global__ void mat() {
             // TODO: add environment light
         }
     }
+
+    d_rand_states[path_ray_id] = local_rand_state;
 }
 
 __global__ void gen(int camera_ray_start_id) {
@@ -256,12 +256,15 @@ __global__ void gen(int camera_ray_start_id) {
 
     int path_ray_id = d_gen_pending_compact[thread_id];
 
-    d_ray_payload->type[path_ray_id] = PATH_RAY;
-    d_ray_payload->pixel_idx[path_ray_id] = pixel_idx;
-    d_ray_payload->ray[path_ray_id] = d_camera.get_ray((i + curand_uniform(&d_rand_states[path_ray_id])) / d_width,
-                                                       (j + curand_uniform(&d_rand_states[path_ray_id])) / d_height);
+    curandState local_rand_state = d_rand_states[path_ray_id];
+
+    d_ray_pool->pixel_idx[path_ray_id] = pixel_idx;
+    d_ray_pool->ray[path_ray_id] = d_camera.get_ray((i + curand_uniform(&local_rand_state)) / d_width,
+                                                    (j + curand_uniform(&local_rand_state)) / d_height);
     d_path_ray_payload->bounces[path_ray_id] = 0;
     d_path_ray_payload->beta[path_ray_id] = Vec3::make_ones();
+
+    d_rand_states[path_ray_id] = local_rand_state;
 
     d_ch_pending[thread_id] = path_ray_id;
     d_ch_pending_valid[thread_id] = true;
@@ -276,12 +279,12 @@ __global__ void ah() {
     int path_ray_id = ah_ray_id - NUM_WORKING_PATHS;
 
     DeviceStack stack;
-    Ray ray = d_ray_payload->ray[ah_ray_id];
+    Ray ray = d_ray_pool->ray[ah_ray_id];
     Triangle *d_target_triangle = d_ah_shadow_ray_payload->d_target_triangle[path_ray_id];
     bool hit_anything = d_scene.bvh.traverse(d_target_triangle, stack, ray);
 
     if (!hit_anything) {
-        Vec3::atomic_add(&d_framebuffer[d_ray_payload->pixel_idx[ah_ray_id]], d_ah_shadow_ray_payload->L[path_ray_id]);
+        Vec3::atomic_add(&d_framebuffer[d_ray_pool->pixel_idx[ah_ray_id]], d_ah_shadow_ray_payload->L[path_ray_id]);
     }
 }
 
@@ -290,30 +293,31 @@ __global__ void ch() {
     int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (thread_id >= num_ch_pending) return;
 
-    int ch_ray_id = d_ch_pending_compact[thread_id];
-    int path_ray_id = ch_ray_id - 2 * NUM_WORKING_PATHS;
+    int ray_id = d_ch_pending_compact[thread_id];
 
     DeviceStack stack;
-    Ray ray = d_ray_payload->ray[ch_ray_id];
+    Ray ray = d_ray_pool->ray[ray_id];
     Intersection isect;
     Primitive* d_isect_primitive;
 
     bool hit_anything = d_scene.bvh.traverse(stack, ray, isect, d_isect_primitive);
 
-    if (d_ray_payload->type[ch_ray_id] == CH_SHADOW_RAY) {
+    if (ray_id < NUM_WORKING_PATHS) {
+        // type == PATH_RAY
+        // save intersection result
+        d_path_ray_payload->hit_anything[ray_id] = hit_anything;
+        d_path_ray_payload->isect[ray_id] = isect;
+        d_path_ray_payload->d_isect_primitive[ray_id] = d_isect_primitive;
+    } else {
+        // type == CH_SHADOW_RAY
+        int path_ray_id = ray_id - 2 * NUM_WORKING_PATHS;
         if (hit_anything) {
             if (d_ch_shadow_ray_payload->d_target_triangle[path_ray_id] == d_isect_primitive->d_triangle) {
-                Vec3::atomic_add(&d_framebuffer[d_ray_payload->pixel_idx[ch_ray_id]], d_ch_shadow_ray_payload->L[path_ray_id]);
+                Vec3::atomic_add(&d_framebuffer[d_ray_pool->pixel_idx[ray_id]], d_ch_shadow_ray_payload->L[path_ray_id]);
             }
         } else {
             // TODO: add environment light
         }
-    } else {
-        // type == PATH_RAY
-        // save intersection result
-        d_path_ray_payload->hit_anything[ch_ray_id] = hit_anything;
-        d_path_ray_payload->isect[ch_ray_id] = isect;
-        d_path_ray_payload->d_isect_primitive[ch_ray_id] = d_isect_primitive;
     }
 }
 
@@ -376,7 +380,7 @@ void render(int width, int height, int num_samples, int max_bounces,
     int *d_gen_pending_compact_ptr = cuda_malloc_symbol(d_gen_pending_compact, NUM_WORKING_PATHS * sizeof(int));
     int *d_ah_pending_compact_ptr = cuda_malloc_symbol(d_ah_pending_compact, NUM_WORKING_PATHS * sizeof(int));
     int *d_ch_pending_compact_ptr = cuda_malloc_symbol(d_ch_pending_compact, 3 * NUM_WORKING_PATHS * sizeof(int));
-    cuda_malloc_symbol(d_ray_payload, sizeof(RayPayload));
+    cuda_malloc_symbol(d_ray_pool, sizeof(RayPool));
     cuda_malloc_symbol(d_path_ray_payload, sizeof(PathRayPayload));
     cuda_malloc_symbol(d_ah_shadow_ray_payload, sizeof(ShadowRayPayload));
     cuda_malloc_symbol(d_ch_shadow_ray_payload, sizeof(ShadowRayPayload));
