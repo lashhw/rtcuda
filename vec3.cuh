@@ -24,6 +24,7 @@ struct Vec3 {
 
     __host__ __device__ static Vec3 make_zeros() { return Vec3(0.f, 0.f, 0.f); }
     __host__ __device__ static Vec3 make_ones() { return Vec3(1.f, 1.f, 1.f); }
+    __device__ static void atomic_add(Vec3 *address, Vec3 val);
 
     float x, y, z;
 };
@@ -143,6 +144,12 @@ __host__ __device__ void Vec3::sqrt_inplace() {
     x = sqrtf(x);
     y = sqrtf(y);
     z = sqrtf(z);
+}
+
+__device__ void Vec3::atomic_add(Vec3* address, Vec3 val) {
+    atomicAdd(&address->x, val.x);
+    atomicAdd(&address->y, val.y);
+    atomicAdd(&address->z, val.z);
 }
 
 #endif //RTCUDA_VEC3_CUH

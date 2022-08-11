@@ -1,40 +1,206 @@
 #ifndef RTCUDA_RENDER_CUH
 #define RTCUDA_RENDER_CUH
 
-// direct lighting "Ld" estimator
-__device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &unit_wo,
-                   const Material* d_mat, curandState &rand_state, DeviceStack &stack) {
-    // uniformly choose one light source
-    if (scene.num_lights == 0) return Vec3::make_zeros();
-    int light_idx = min((int)(curand_uniform(&rand_state) * scene.num_lights),
-                        scene.num_lights - 1);
-    const Light &light = scene.d_lights[light_idx];
+// use structure-of-array for memory coalescing
+struct RayPool {
+    int pixel_idx[3 * NUM_WORKING_PATHS];
+    Ray ray[3 * NUM_WORKING_PATHS];
+};
 
-    Vec3 L = Vec3::make_zeros();
+struct PathRayPayload {
+    // intersection result
+    bool hit_anything[NUM_WORKING_PATHS];
+    Intersection isect[NUM_WORKING_PATHS];
+    Primitive *d_isect_primitive[NUM_WORKING_PATHS];
+
+    int bounces[NUM_WORKING_PATHS];
+    Vec3 beta[NUM_WORKING_PATHS];
+};
+
+struct ShadowRayPayload {
+    Triangle *d_target_triangle[NUM_WORKING_PATHS];
+    Vec3 L[NUM_WORKING_PATHS];
+};
+
+__managed__ int num_mat_pending;
+__managed__ int num_gen_pending;
+__managed__ int num_ah_pending;
+__managed__ int num_ch_pending;
+
+__constant__ curandState *d_rand_states;
+__constant__ Vec3 *d_framebuffer;
+
+__constant__ int *d_mat_pending;
+__constant__ int *d_gen_pending;
+__constant__ int *d_ah_pending;
+__constant__ int *d_ch_pending;
+
+__constant__ bool *d_mat_pending_valid;
+__constant__ bool *d_gen_pending_valid;
+__constant__ bool *d_ah_pending_valid;
+__constant__ bool *d_ch_pending_valid;
+
+__constant__ int *d_mat_pending_compact;
+__constant__ int *d_gen_pending_compact;
+__constant__ int *d_ah_pending_compact;
+__constant__ int *d_ch_pending_compact;
+
+__constant__ RayPool *d_ray_pool;
+__constant__ PathRayPayload *d_path_ray_payload;
+__constant__ ShadowRayPayload *d_ah_shadow_ray_payload;
+__constant__ ShadowRayPayload *d_ch_shadow_ray_payload;
+
+__constant__ int d_width;
+__constant__ int d_height;
+__constant__ int d_num_samples;
+__constant__ int d_max_bounces;
+__constant__ int d_camera_ray_end_id;
+__constant__ Scene d_scene;
+__constant__ Camera d_camera;
+
+__global__ void init_framebuffer(int num_pixels) {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= num_pixels) return;
+
+    d_framebuffer[thread_id] = Vec3::make_zeros();
+}
+
+__global__ void init_rand_states(int rand_seed) {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= NUM_WORKING_PATHS) return;
+
+    curand_init(rand_seed, thread_id, 0, &d_rand_states[thread_id]);
+}
+
+__global__ void init_path_ray_payload() {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= NUM_WORKING_PATHS) return;
+
+    // force the ray to be killed
+    d_path_ray_payload->bounces[thread_id] = INT_MAX;
+}
+
+__global__ void init() {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= NUM_WORKING_PATHS) return;
+
+    d_gen_pending_valid[thread_id] = false;
+    d_mat_pending_valid[thread_id] = false;
+    d_ah_pending_valid[thread_id] = false;
+    d_ch_pending_valid[thread_id] = false;
+    d_ch_pending_valid[NUM_WORKING_PATHS + thread_id] = false;
+    d_ch_pending_valid[2 * NUM_WORKING_PATHS + thread_id] = false;
+
+    bool hit_anything = d_path_ray_payload->hit_anything[thread_id];
+    int bounces = d_path_ray_payload->bounces[thread_id];
+
+    if (bounces == 0) {
+        if (hit_anything) {
+            Light *d_isect_area_light = d_path_ray_payload->d_isect_primitive[thread_id]->d_area_light;
+            if (d_isect_area_light) {
+                Vec3::atomic_add(&d_framebuffer[d_ray_pool->pixel_idx[thread_id]], d_isect_area_light->L);
+            }
+        } else {
+            // TODO: add environment light
+        }
+    }
+
+    bool continute_path = bounces < d_max_bounces;
+
+    // Russian roulette
+    if (continute_path && hit_anything && bounces > RR_START) {
+        Vec3 beta = d_path_ray_payload->beta[thread_id];
+        float beta_max = beta.max();
+        if (beta_max < RR_THRESHOLD) {
+            float p_terminate = fmaxf(0.05f, 1 - beta_max);
+            if (curand_uniform(&d_rand_states[thread_id]) < p_terminate) {
+                // kill the ray
+                hit_anything = false;
+            } else {
+                d_path_ray_payload->beta[thread_id] = beta / (1 - p_terminate);
+            }
+        }
+    }
+
+    d_path_ray_payload->bounces[thread_id] = bounces + 1;
+
+    if (continute_path) {
+        if (hit_anything) {
+            d_mat_pending[thread_id] = thread_id;
+            d_mat_pending_valid[thread_id] = true;
+        }
+    } else {
+        d_gen_pending[thread_id] = thread_id;
+        d_gen_pending_valid[thread_id] = true;
+    }
+}
+
+__global__ void mat() {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= num_mat_pending) return;
+
+    int path_ray_id = d_mat_pending_compact[thread_id];
+
+    int pixel_idx = d_ray_pool->pixel_idx[path_ray_id];
+    Vec3 unit_wo = d_ray_pool->ray[path_ray_id].unit_d;
+    Intersection isect = d_path_ray_payload->isect[path_ray_id];
+    Primitive *d_isect_primitive = d_path_ray_payload->d_isect_primitive[path_ray_id];
+    Material *d_mat = d_isect_primitive->d_mat;
+    Vec3 multiplier = d_path_ray_payload->beta[path_ray_id] * d_scene.num_lights;
+
+    // remember to store rand state back to global memory!!
+    curandState local_rand_state = d_rand_states[path_ray_id];
+
+    // generate next ray
+    {
+        Vec3 unit_n = isect.unit_n, unit_wi;
+        float pdf;
+        Vec3 f = d_mat->sample_f(unit_wo, local_rand_state, unit_n, unit_wi, pdf);
+
+        // update PATH_RAY
+        d_ray_pool->ray[path_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
+        d_path_ray_payload->beta[path_ray_id] *= f * dot(unit_wi, unit_n) / pdf;
+
+        // add to d_ch_pending
+        d_ch_pending[NUM_WORKING_PATHS + thread_id] = path_ray_id;
+        d_ch_pending_valid[NUM_WORKING_PATHS + thread_id] = true;
+    }
+
+    // uniformly sample one light source
+    if (d_scene.num_lights == 0) {
+        d_rand_states[path_ray_id] = local_rand_state;
+        return;
+    }
+    int light_idx = min((int)(curand_uniform(&local_rand_state) * d_scene.num_lights),
+                        d_scene.num_lights - 1);
+    const Light light = d_scene.d_lights[light_idx];
 
     // sample light source with MIS
     {
-        Vec3 unit_wi;
-        Vec3 Li;
-        float light_t;
-        float light_pdf;
-        if (light.sample_Li(isect, rand_state, unit_wi, Li, light_t, light_pdf)) {
+        Vec3 unit_wi, Li;
+        float light_t, light_pdf;
+        if (light.sample_Li(isect, local_rand_state, unit_wi, Li, light_t, light_pdf)) {
             Vec3 unit_n = dot(isect.unit_n, unit_wi) > 0.f ? isect.unit_n : -isect.unit_n;
             Vec3 f;
             float scattering_pdf;
             if (d_mat->get_f(unit_wo, unit_wi, unit_n, f, scattering_pdf)) {
                 f *= dot(unit_wi, unit_n);
 
-                // test whether the ray is occluded
-                Ray light_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi, light_t);
-                if (!scene.bvh.traverse_exclude(light.d_triangle, stack, light_ray)) {
-                    if (light.is_delta()) {
-                        L += f * Li / light_pdf;
-                    } else {
-                        float weight = power_heuristic(light_pdf, scattering_pdf);
-                        L += f * Li * weight / light_pdf;
-                    }
+                // generate AH_SHADOW_RAY
+                int ah_ray_id = NUM_WORKING_PATHS + path_ray_id;
+                d_ray_pool->pixel_idx[ah_ray_id] = pixel_idx;
+                d_ray_pool->ray[ah_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi, light_t);
+                d_ah_shadow_ray_payload->d_target_triangle[path_ray_id] = light.d_triangle;
+                if (light.is_delta()) {
+                    d_ah_shadow_ray_payload->L[path_ray_id] = multiplier * f * Li / light_pdf;
+                } else {
+                    float weight = power_heuristic(light_pdf, scattering_pdf);
+                    d_ah_shadow_ray_payload->L[path_ray_id] = multiplier * f * Li * weight / light_pdf;
                 }
+
+                // add to d_ah_pending
+                d_ah_pending[thread_id] = ah_ray_id;
+                d_ah_pending_valid[thread_id] = true;
             }
         }
     }
@@ -43,130 +209,254 @@ __device__ Vec3 Ld(const Scene &scene, const Intersection &isect, const Vec3 &un
     {
         if (!light.is_delta()) {
             // sample a direction based on material's BSDF
-            Vec3 unit_n = isect.unit_n;
-            Vec3 unit_wi;
+            Vec3 unit_n = isect.unit_n, unit_wi;
             float scattering_pdf;
-            Vec3 f = d_mat->sample_f(unit_wo, rand_state, unit_n, unit_wi, scattering_pdf);
+            Vec3 f = d_mat->sample_f(unit_wo, local_rand_state, unit_n, unit_wi, scattering_pdf);
             f *= dot(unit_wi, unit_n);
 
             // if BSDF is specular, there is no need to apply MIS
             float weight = 1.f;
             if (!d_mat->is_specular()) {
                 float light_pdf = light.pdf_Li(isect, unit_wi);
-                if (light_pdf == 0.f) return L * scene.num_lights;
+                if (light_pdf == 0.f) {
+                    d_rand_states[path_ray_id] = local_rand_state;
+                    return;
+                }
                 weight = power_heuristic(scattering_pdf, light_pdf);
             }
 
-            Vec3 Li;
-            bool Li_is_valid = false;
+            // generate CH_SHADOW_RAY
+            int ch_ray_id = 2 * NUM_WORKING_PATHS + path_ray_id;
+            d_ray_pool->pixel_idx[ch_ray_id] = pixel_idx;
+            d_ray_pool->ray[ch_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
+            d_ch_shadow_ray_payload->d_target_triangle[path_ray_id] = d_isect_primitive->d_triangle;
+            d_ch_shadow_ray_payload->L[path_ray_id] = multiplier * f * light.L * weight / scattering_pdf;
 
-            Ray light_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
-            Intersection light_isect;
-            Primitive *d_light_isect_primitive;
-            if (scene.bvh.traverse(stack, light_ray, light_isect, d_light_isect_primitive)) {
-                Light *d_isect_area_light = d_light_isect_primitive->d_area_light;
-                if (d_isect_area_light == &light) {
-                    Li = d_isect_area_light->L;
-                    Li_is_valid = true;
-                }
-            } else {
-                if (light.get_Le(unit_wi, Li)) Li_is_valid = true;
-            }
-            if (Li_is_valid) L += f * Li * weight / scattering_pdf;
+            // add to d_ch_pending
+            d_ch_pending[2 * NUM_WORKING_PATHS + thread_id] = ch_ray_id;
+            d_ch_pending_valid[2 * NUM_WORKING_PATHS + thread_id] = true;
+
+            // TODO: add environment light
         }
     }
 
-    return L * scene.num_lights;
+    d_rand_states[path_ray_id] = local_rand_state;
 }
 
-// outgoing radiance "Lo" estimator
-__device__ Vec3 Lo(const Ray &ray, const Scene &scene, int max_bounces, int rr_threshold,
-                   curandState &rand_state, DeviceStack &stack) {
-    Vec3 L = Vec3::make_zeros();
-    Vec3 beta = Vec3::make_ones();
-    Ray cur_ray = ray;
-    bool specular_bounce = false;
+__global__ void gen(int camera_ray_start_id) {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= num_gen_pending) return;
 
-    for (int bounces = 0; bounces < max_bounces; bounces++) {
-        Intersection isect;
-        Primitive *d_isect_primitive;
-        bool hit_anything = scene.bvh.traverse(stack, cur_ray, isect, d_isect_primitive);
+    int camera_ray_id = camera_ray_start_id + thread_id;
+    if (camera_ray_id >= d_camera_ray_end_id) return;
 
-        // possibily add "Le" at intersection point
-        if (bounces == 0 || specular_bounce) {
-            if (hit_anything) {
-                if (d_isect_primitive->d_area_light) {
-                    L += beta * d_isect_primitive->d_area_light->L;
-                }
-            } else {
-                // TODO: add infinite lights
-            }
-        }
+    int pixel_idx = camera_ray_id / d_num_samples;
+    int i = pixel_idx % d_width;
+    int j = pixel_idx / d_width;
 
-        if (!hit_anything) break;
+    int path_ray_id = d_gen_pending_compact[thread_id];
 
-        // sample "Ld" (direct lighting) only if intersected material is not specular,
-        // since it is a waste to track specular ray twice (once here, another is in next loop)
-        Material *d_mat = d_isect_primitive->d_mat;
-        specular_bounce = d_mat->is_specular();
-        if (!specular_bounce) {
-            L += beta * Ld(scene, isect, cur_ray.unit_d, d_mat, rand_state, stack);
-        }
+    curandState local_rand_state = d_rand_states[path_ray_id];
 
-        // sample BSDF to get new path direction
-        Vec3 unit_n = isect.unit_n;
-        Vec3 unit_wi;
-        float pdf;
-        Vec3 f = d_mat->sample_f(cur_ray.unit_d, rand_state, unit_n, unit_wi, pdf);
-        beta *= f * dot(unit_wi, unit_n) / pdf;
-        cur_ray = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
+    d_ray_pool->pixel_idx[path_ray_id] = pixel_idx;
+    d_ray_pool->ray[path_ray_id] = d_camera.get_ray((i + curand_uniform(&local_rand_state)) / d_width,
+                                                    (j + curand_uniform(&local_rand_state)) / d_height);
+    d_path_ray_payload->bounces[path_ray_id] = 0;
+    d_path_ray_payload->beta[path_ray_id] = Vec3::make_ones();
 
-        // Russian roulette
-        float beta_max = beta.max();
-        if (beta_max < rr_threshold && bounces > 3) {
-            float p_terminate = fmaxf(0.05f, 1 - beta_max);
-            if (curand_uniform(&rand_state) < p_terminate) break;
-            beta /= 1 - p_terminate;
-        }
-    }
+    d_rand_states[path_ray_id] = local_rand_state;
 
-    return L;
+    d_ch_pending[thread_id] = path_ray_id;
+    d_ch_pending_valid[thread_id] = true;
 }
 
-__global__ void render_init(int width, int height, curandState *d_rand_state) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= width || j >= height) return;
+// any-hit
+__global__ void ah() {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= num_ah_pending) return;
 
-    int pixel_idx = j * width + i;
-    curand_init(1, pixel_idx, 0, &d_rand_state[pixel_idx]);
-}
+    int ah_ray_id = d_ah_pending_compact[thread_id];
+    int path_ray_id = ah_ray_id - NUM_WORKING_PATHS;
 
-// TODO: eliminate fp_64 operations
-__global__ void render(Camera<false> camera, Scene scene, int num_samples, int max_bounces, int rr_threshold,
-                       int width, int height, curandState *d_rand_state, Vec3 *d_framebuffer) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= width || j >= height) return;
-
-    int pixel_idx = j * width + i;
-    curandState local_rand_state = d_rand_state[pixel_idx];
-    float inv_width = 1.f / width;
-    float inv_height = 1.f / height;
     DeviceStack stack;
-    Vec3 L(0.f, 0.f, 0.f);
+    Ray ray = d_ray_pool->ray[ah_ray_id];
+    Triangle *d_target_triangle = d_ah_shadow_ray_payload->d_target_triangle[path_ray_id];
+    bool hit_anything = d_scene.bvh.traverse(d_target_triangle, stack, ray);
 
-    for (int s = 0; s < num_samples; s++) {
-        float x = (i + curand_uniform(&local_rand_state)) * inv_width;
-        float y = (j + curand_uniform(&local_rand_state)) * inv_height;
-        Ray ray = camera.get_ray(x, y);
-        L += Lo(ray, scene, max_bounces, rr_threshold, local_rand_state, stack);
+    if (!hit_anything) {
+        Vec3::atomic_add(&d_framebuffer[d_ray_pool->pixel_idx[ah_ray_id]], d_ah_shadow_ray_payload->L[path_ray_id]);
+    }
+}
+
+// closest-hit
+__global__ void ch() {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= num_ch_pending) return;
+
+    int ray_id = d_ch_pending_compact[thread_id];
+
+    DeviceStack stack;
+    Ray ray = d_ray_pool->ray[ray_id];
+    Intersection isect;
+    Primitive* d_isect_primitive;
+
+    bool hit_anything = d_scene.bvh.traverse(stack, ray, isect, d_isect_primitive);
+
+    if (ray_id < NUM_WORKING_PATHS) {
+        // type == PATH_RAY
+        // save intersection result
+        d_path_ray_payload->hit_anything[ray_id] = hit_anything;
+        d_path_ray_payload->isect[ray_id] = isect;
+        d_path_ray_payload->d_isect_primitive[ray_id] = d_isect_primitive;
+    } else {
+        // type == CH_SHADOW_RAY
+        int path_ray_id = ray_id - 2 * NUM_WORKING_PATHS;
+        if (hit_anything) {
+            if (d_ch_shadow_ray_payload->d_target_triangle[path_ray_id] == d_isect_primitive->d_triangle) {
+                Vec3::atomic_add(&d_framebuffer[d_ray_pool->pixel_idx[ray_id]], d_ch_shadow_ray_payload->L[path_ray_id]);
+            }
+        } else {
+            // TODO: add environment light
+        }
+    }
+}
+
+__global__ void post_process_framebuffer(int num_pixels) {
+    int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_id >= num_pixels) return;
+
+    Vec3 tmp = d_framebuffer[thread_id];
+    tmp /= d_num_samples;
+    tmp.sqrt_inplace();
+    d_framebuffer[thread_id] = tmp;
+}
+
+template <typename T>
+T* cuda_malloc_symbol(T* &symbol, const size_t size) {
+    T* tmp;
+    CHECK_CUDA(cudaMalloc(&tmp, size));
+    CHECK_CUDA(cudaMemcpyToSymbol(symbol, &tmp, sizeof(T*)));
+    return tmp;
+}
+
+void compact(int num_items, int *d_in, bool *d_flags, int *d_out, int *d_num_selected_out) {
+    static void *d_temp_storage = NULL;
+    static size_t temp_storage_bytes = 0;
+
+    size_t new_temp_storage_bytes;
+    CHECK_CUDA(cub::DeviceSelect::Flagged(NULL, new_temp_storage_bytes, d_in, d_flags,
+                                          d_out, d_num_selected_out, num_items));
+
+    if (new_temp_storage_bytes > temp_storage_bytes) {
+        CHECK_CUDA(cudaFree(d_temp_storage));
+        CHECK_CUDA(cudaMalloc(&d_temp_storage, new_temp_storage_bytes));
+        temp_storage_bytes = new_temp_storage_bytes;
     }
 
-    d_rand_state[pixel_idx] = local_rand_state;
-    L /= num_samples;
-    L.sqrt_inplace();
-    d_framebuffer[pixel_idx] = L;
+    CHECK_CUDA(cub::DeviceSelect::Flagged(d_temp_storage, temp_storage_bytes, d_in, d_flags,
+                                          d_out, d_num_selected_out, num_items));
+    CHECK_CUDA(cudaDeviceSynchronize());
+}
+
+void render(int width, int height, int num_samples, int max_bounces,
+            Camera camera, Scene scene, std::vector<Vec3> &framebuffer) {
+    // initialize some useful variables
+    int num_pixels = width * height;
+    int camera_ray_start_id = 0;
+    int camera_ray_end_id = num_pixels * num_samples;
+
+    // allocate memory on device
+    cuda_malloc_symbol(d_rand_states, NUM_WORKING_PATHS * sizeof(curandState));
+    Vec3 *d_framebuffer_ptr = cuda_malloc_symbol(d_framebuffer, num_pixels * sizeof(Vec3));
+    int *d_mat_pending_ptr = cuda_malloc_symbol(d_mat_pending, NUM_WORKING_PATHS * sizeof(int));
+    int *d_gen_pending_ptr = cuda_malloc_symbol(d_gen_pending, NUM_WORKING_PATHS * sizeof(int));
+    int *d_ah_pending_ptr = cuda_malloc_symbol(d_ah_pending, NUM_WORKING_PATHS * sizeof(int));
+    int *d_ch_pending_ptr = cuda_malloc_symbol(d_ch_pending, 3 * NUM_WORKING_PATHS * sizeof(int));
+    bool *d_mat_pending_valid_ptr = cuda_malloc_symbol(d_mat_pending_valid, NUM_WORKING_PATHS * sizeof(bool));
+    bool *d_gen_pending_valid_ptr = cuda_malloc_symbol(d_gen_pending_valid, NUM_WORKING_PATHS * sizeof(bool));
+    bool *d_ah_pending_valid_ptr = cuda_malloc_symbol(d_ah_pending_valid, NUM_WORKING_PATHS * sizeof(bool));
+    bool *d_ch_pending_valid_ptr = cuda_malloc_symbol(d_ch_pending_valid, 3 * NUM_WORKING_PATHS * sizeof(bool));
+    int *d_mat_pending_compact_ptr = cuda_malloc_symbol(d_mat_pending_compact, NUM_WORKING_PATHS * sizeof(int));
+    int *d_gen_pending_compact_ptr = cuda_malloc_symbol(d_gen_pending_compact, NUM_WORKING_PATHS * sizeof(int));
+    int *d_ah_pending_compact_ptr = cuda_malloc_symbol(d_ah_pending_compact, NUM_WORKING_PATHS * sizeof(int));
+    int *d_ch_pending_compact_ptr = cuda_malloc_symbol(d_ch_pending_compact, 3 * NUM_WORKING_PATHS * sizeof(int));
+    cuda_malloc_symbol(d_ray_pool, sizeof(RayPool));
+    cuda_malloc_symbol(d_path_ray_payload, sizeof(PathRayPayload));
+    cuda_malloc_symbol(d_ah_shadow_ray_payload, sizeof(ShadowRayPayload));
+    cuda_malloc_symbol(d_ch_shadow_ray_payload, sizeof(ShadowRayPayload));
+
+    // copy some variables to device
+    CHECK_CUDA(cudaMemcpyToSymbol(d_width, &width, sizeof(int)));
+    CHECK_CUDA(cudaMemcpyToSymbol(d_height, &height, sizeof(int)));
+    CHECK_CUDA(cudaMemcpyToSymbol(d_num_samples, &num_samples, sizeof(int)));
+    CHECK_CUDA(cudaMemcpyToSymbol(d_max_bounces, &max_bounces, sizeof(int)));
+    CHECK_CUDA(cudaMemcpyToSymbol(d_camera_ray_end_id, &camera_ray_end_id, sizeof(int)));
+    CHECK_CUDA(cudaMemcpyToSymbol(d_scene, &scene, sizeof(Scene)));
+    CHECK_CUDA(cudaMemcpyToSymbol(d_camera, &camera, sizeof(Camera)));
+
+    // initialize d_framebuffer
+    constexpr int BLOCK_SIZE = 64;
+    init_framebuffer<<<(num_pixels + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(num_pixels);
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
+
+    // initialize d_rand_states
+    constexpr int RAND_SEED = 1;
+    init_rand_states<<<(NUM_WORKING_PATHS + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(RAND_SEED);
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
+
+    // initialize d_path_ray_payload
+    init_path_ray_payload<<<(NUM_WORKING_PATHS + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
+
+    // start rendering
+    while (true) {
+        init<<<(NUM_WORKING_PATHS + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
+        CHECK_CUDA(cudaGetLastError());
+        CHECK_CUDA(cudaDeviceSynchronize());
+
+        compact(NUM_WORKING_PATHS, d_mat_pending_ptr, d_mat_pending_valid_ptr, d_mat_pending_compact_ptr, &num_mat_pending);
+        compact(NUM_WORKING_PATHS, d_gen_pending_ptr, d_gen_pending_valid_ptr, d_gen_pending_compact_ptr, &num_gen_pending);
+        // termination condition (unable to spawn any ray)
+        if (num_gen_pending == NUM_WORKING_PATHS && camera_ray_start_id >= camera_ray_end_id) break;
+
+        if (num_mat_pending > 0) {
+            mat<<<(num_mat_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
+            CHECK_CUDA(cudaGetLastError());
+            CHECK_CUDA(cudaDeviceSynchronize());
+        }
+
+        if (num_gen_pending > 0) {
+            gen<<<(num_gen_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(camera_ray_start_id);
+            CHECK_CUDA(cudaGetLastError());
+            CHECK_CUDA(cudaDeviceSynchronize());
+            camera_ray_start_id += num_gen_pending;
+        }
+
+        compact(NUM_WORKING_PATHS, d_ah_pending_ptr, d_ah_pending_valid_ptr, d_ah_pending_compact_ptr, &num_ah_pending);
+        compact(3 * NUM_WORKING_PATHS, d_ch_pending_ptr, d_ch_pending_valid_ptr, d_ch_pending_compact_ptr, &num_ch_pending);
+
+        if (num_ah_pending > 0) {
+            ah<<<(num_ah_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
+            CHECK_CUDA(cudaGetLastError());
+            CHECK_CUDA(cudaDeviceSynchronize());
+        }
+
+        if (num_ch_pending > 0) {
+            ch<<<(num_ch_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
+            CHECK_CUDA(cudaGetLastError());
+            CHECK_CUDA(cudaDeviceSynchronize());
+        }
+    }
+
+    // post-process framebuffer
+    post_process_framebuffer<<<(num_pixels + BLOCK_SIZE - 1), BLOCK_SIZE>>>(num_pixels);
+
+    // copy framebuffer to host
+    framebuffer.resize(num_pixels);
+    CHECK_CUDA(cudaMemcpy(framebuffer.data(), d_framebuffer_ptr, num_pixels * sizeof(Vec3), cudaMemcpyDeviceToHost));
 }
 
 #endif //RTCUDA_RENDER_CUH

@@ -1,12 +1,8 @@
 #ifndef RTCUDA_CAMERA_CUH
 #define RTCUDA_CAMERA_CUH
 
-// TODO: implement depth of field
-template <bool enable_depth_of_field>
-struct Camera;
-
-template <>
-struct Camera<false> {
+struct Camera {
+    Camera() { }
     Camera(Vec3 lookfrom, Vec3 lookat, Vec3 up, float vfov, float aspect_ratio);
     __device__ Ray get_ray(float x, float y) const;
 
@@ -16,7 +12,7 @@ struct Camera<false> {
     Vec3 vertical;
 };
 
-Camera<false>::Camera(Vec3 lookfrom, Vec3 lookat, Vec3 up, float vfov, float aspect_ratio)
+Camera::Camera(Vec3 lookfrom, Vec3 lookat, Vec3 up, float vfov, float aspect_ratio)
     : lookfrom(lookfrom) {
     float vfov_rad = deg_to_rad(vfov);
 
@@ -32,7 +28,7 @@ Camera<false>::Camera(Vec3 lookfrom, Vec3 lookat, Vec3 up, float vfov, float asp
     upper_left = lookfrom - w - 0.5f * horizontal - 0.5f * vertical;
 }
 
-__device__ Ray Camera<false>::get_ray(float x, float y) const {
+__device__ Ray Camera::get_ray(float x, float y) const {
     Vec3 direction = upper_left + x * horizontal + y * vertical - lookfrom;
     return Ray(lookfrom, direction.unit_vector());
 }

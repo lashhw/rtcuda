@@ -13,6 +13,7 @@
 #include <stack>
 
 #include <curand_kernel.h>
+#include <cub/cub.cuh>
 
 #include "constant.hpp"
 #include "profiler.hpp"
@@ -158,43 +159,19 @@ int main() {
     constexpr int WIDTH = 600;
     constexpr int HEIGHT = 600;
     constexpr float ASPECT_RATIO = (float)WIDTH / (float)HEIGHT;
-    Camera<false> camera(Vec3(0.5f, 0.5f, 1.5f),
-                         Vec3(0.5f, 0.5f, 0.0f),
-                         Vec3(0.0f, 1.0f, 0.0f),
-                         37.8f,
-                         ASPECT_RATIO);
+    Camera camera(Vec3(0.5f, 0.5f, 1.5f),
+                  Vec3(0.5f, 0.5f, 0.0f),
+                  Vec3(0.0f, 1.0f, 0.0f),
+                  37.8f,
+                  ASPECT_RATIO);
 
-    // initialize rand_state
-    constexpr int NUM_PIXELS = WIDTH * HEIGHT;
-    constexpr int WIDTH_PER_BLOCK = 8;
-    constexpr int HEIGHT_PER_BLOCK = 8;
-    const dim3 GRID_SIZE((WIDTH + WIDTH_PER_BLOCK - 1) / WIDTH_PER_BLOCK,
-                         (HEIGHT + HEIGHT_PER_BLOCK - 1) / HEIGHT_PER_BLOCK);
-    const dim3 BLOCK_SIZE(WIDTH_PER_BLOCK, HEIGHT_PER_BLOCK);
-    curandState *d_rand_state;
-    CHECK_CUDA(cudaMalloc(&d_rand_state, NUM_PIXELS * sizeof(curandState)));
-    render_init<<<GRID_SIZE, BLOCK_SIZE>>>(WIDTH, HEIGHT, d_rand_state);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaDeviceSynchronize());
-
-    // allocate framebuffer on device
-    Vec3 *d_framebuffer;
-    CHECK_CUDA(cudaMalloc(&d_framebuffer, NUM_PIXELS * sizeof(Vec3)));
-
-    // start rendering
-    profiler.start("Rendering");
-    constexpr int NUM_SAMPLES = 128;
+    // render
+    constexpr int NUM_SAMPLES = 10;
     constexpr int MAX_BOUNCES = 10;
-    constexpr float RR_THRESHOLD = 1;
-    render<<<GRID_SIZE, BLOCK_SIZE>>>(camera, scene, NUM_SAMPLES, MAX_BOUNCES, RR_THRESHOLD,
-                                      WIDTH, HEIGHT, d_rand_state, d_framebuffer);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaDeviceSynchronize());
+    std::vector<Vec3> framebuffer;
+    profiler.start("Rendering");
+    render(WIDTH, HEIGHT, NUM_SAMPLES, MAX_BOUNCES, camera, scene, framebuffer);
     profiler.stop();
-
-    // copy framebuffer to host
-    auto h_framebuffer = std::make_unique<Vec3[]>(NUM_PIXELS);
-    CHECK_CUDA(cudaMemcpy(h_framebuffer.get(), d_framebuffer, NUM_PIXELS * sizeof(Vec3), cudaMemcpyDeviceToHost));
 
     // write image
     profiler.start("Writing image");
@@ -203,9 +180,9 @@ int main() {
     for (int j = 0; j < HEIGHT; j++) {
         for (int i = 0; i < WIDTH; i++) {
             size_t pixel_idx = j * WIDTH + i;
-            float r = h_framebuffer[pixel_idx].x;
-            float g = h_framebuffer[pixel_idx].y;
-            float b = h_framebuffer[pixel_idx].z;
+            float r = framebuffer[pixel_idx].x;
+            float g = framebuffer[pixel_idx].y;
+            float b = framebuffer[pixel_idx].z;
             int ir = clamp(int(256.f * r), 0, 255);
             int ig = clamp(int(256.f * g), 0, 255);
             int ib = clamp(int(256.f * b), 0, 255);
