@@ -101,7 +101,6 @@ __global__ void init() {
     int pixel_idx = d_ray_payload->pixel_idx[thread_id];
     bool hit_anything = d_path_ray_payload->hit_anything[thread_id];
     int bounces = d_path_ray_payload->bounces[thread_id];
-    Vec3 beta = d_path_ray_payload->beta[thread_id];
 
     if (bounces == 0) {
         if (hit_anything) {
@@ -114,28 +113,17 @@ __global__ void init() {
         }
     }
 
-    bool continute_path = hit_anything && bounces < d_max_bounces;
-
-    // Russian roulette
-    if (continute_path && bounces > RR_START) {
-        float beta_max = beta.max();
-        if (beta_max < RR_THRESHOLD) {
-            float p_terminate = fmaxf(0.05f, 1 - beta_max);
-            if (curand_uniform(&d_rand_states[thread_id]) < p_terminate) {
-                continute_path = false;
-            } else {
-                d_path_ray_payload->beta[thread_id] = beta / (1 - p_terminate);
-            }
+    if (bounces < d_max_bounces) {
+        if (hit_anything) {
+            d_mat_pending[thread_id] = thread_id;
+            d_mat_pending_valid[thread_id] = true;
         }
-    }
-
-    if (continute_path) {
-        d_mat_pending[thread_id] = thread_id;
-        d_mat_pending_valid[thread_id] = true;
     } else {
         d_gen_pending[thread_id] = thread_id;
         d_gen_pending_valid[thread_id] = true;
     }
+
+    d_path_ray_payload->bounces[thread_id] = bounces + 1;
 }
 
 __global__ void mat() {
