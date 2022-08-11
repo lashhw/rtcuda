@@ -148,7 +148,6 @@ __global__ void mat() {
 
         // generate PATH_RAY
         d_ray_payload->ray[path_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
-        d_path_ray_payload->bounces[path_ray_id] += 1;
         d_path_ray_payload->beta[path_ray_id] *= f * dot(unit_wi, unit_n) / pdf;
 
         // add to d_ch_pending
