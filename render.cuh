@@ -22,10 +22,10 @@ struct ShadowRayPayload {
     Vec3 L[NUM_WORKING_PATHS];
 };
 
-__managed__ int num_mat_pending;
-__managed__ int num_gen_pending;
-__managed__ int num_ah_pending;
-__managed__ int num_ch_pending;
+__device__ int d_num_mat_pending;
+__device__ int d_num_gen_pending;
+__device__ int d_num_ah_pending;
+__device__ int d_num_ch_pending;
 
 __constant__ curandState *d_rand_states;
 __constant__ Vec3 *d_framebuffer;
@@ -137,7 +137,7 @@ __global__ void init() {
 
 __global__ void mat() {
     int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (thread_id >= num_mat_pending) return;
+    if (thread_id >= d_num_mat_pending) return;
 
     int path_ray_id = d_mat_pending_compact[thread_id];
 
@@ -245,7 +245,7 @@ __global__ void mat() {
 
 __global__ void gen(int camera_ray_start_id) {
     int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (thread_id >= num_gen_pending) return;
+    if (thread_id >= d_num_gen_pending) return;
 
     int camera_ray_id = camera_ray_start_id + thread_id;
     if (camera_ray_id >= d_camera_ray_end_id) return;
@@ -273,7 +273,7 @@ __global__ void gen(int camera_ray_start_id) {
 // any-hit
 __global__ void ah() {
     int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (thread_id >= num_ah_pending) return;
+    if (thread_id >= d_num_ah_pending) return;
 
     int ah_ray_id = d_ah_pending_compact[thread_id];
     int path_ray_id = ah_ray_id - NUM_WORKING_PATHS;
@@ -291,7 +291,7 @@ __global__ void ah() {
 // closest-hit
 __global__ void ch() {
     int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (thread_id >= num_ch_pending) return;
+    if (thread_id >= d_num_ch_pending) return;
 
     int ray_id = d_ch_pending_compact[thread_id];
 
@@ -355,7 +355,6 @@ void compact(int num_items, int *d_in, bool *d_flags, int *d_out, int *d_num_sel
 
     CHECK_CUDA(cub::DeviceSelect::Flagged(d_temp_storage, temp_storage_bytes, d_in, d_flags,
                                           d_out, d_num_selected_out, num_items));
-    CHECK_CUDA(cudaDeviceSynchronize());
 }
 
 void render(int width, int height, int num_samples, int max_bounces,
@@ -385,6 +384,16 @@ void render(int width, int height, int num_samples, int max_bounces,
     cuda_malloc_symbol(d_ah_shadow_ray_payload, sizeof(ShadowRayPayload));
     cuda_malloc_symbol(d_ch_shadow_ray_payload, sizeof(ShadowRayPayload));
 
+    // get the pointer of d_num_*_pending
+    int *d_num_mat_pending_ptr;
+    int *d_num_gen_pending_ptr;
+    int *d_num_ah_pending_ptr;
+    int *d_num_ch_pending_ptr;
+    CHECK_CUDA(cudaGetSymbolAddress((void **)&d_num_mat_pending_ptr, d_num_mat_pending));
+    CHECK_CUDA(cudaGetSymbolAddress((void **)&d_num_gen_pending_ptr, d_num_gen_pending));
+    CHECK_CUDA(cudaGetSymbolAddress((void **)&d_num_ah_pending_ptr, d_num_ah_pending));
+    CHECK_CUDA(cudaGetSymbolAddress((void **)&d_num_ch_pending_ptr, d_num_ch_pending));
+
     // copy some variables to device
     CHECK_CUDA(cudaMemcpyToSymbol(d_width, &width, sizeof(int)));
     CHECK_CUDA(cudaMemcpyToSymbol(d_height, &height, sizeof(int)));
@@ -397,58 +406,40 @@ void render(int width, int height, int num_samples, int max_bounces,
     // initialize d_framebuffer
     constexpr int BLOCK_SIZE = 64;
     init_framebuffer<<<(num_pixels + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(num_pixels);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaDeviceSynchronize());
 
     // initialize d_rand_states
     constexpr int RAND_SEED = 1;
     init_rand_states<<<(NUM_WORKING_PATHS + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(RAND_SEED);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaDeviceSynchronize());
 
     // initialize d_path_ray_payload
     init_path_ray_payload<<<(NUM_WORKING_PATHS + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaDeviceSynchronize());
 
     // start rendering
+    int num_mat_pending;
+    int num_gen_pending;
+    int num_ah_pending;
+    int num_ch_pending;
     while (true) {
         init<<<(NUM_WORKING_PATHS + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
-        CHECK_CUDA(cudaGetLastError());
-        CHECK_CUDA(cudaDeviceSynchronize());
 
-        compact(NUM_WORKING_PATHS, d_mat_pending_ptr, d_mat_pending_valid_ptr, d_mat_pending_compact_ptr, &num_mat_pending);
-        compact(NUM_WORKING_PATHS, d_gen_pending_ptr, d_gen_pending_valid_ptr, d_gen_pending_compact_ptr, &num_gen_pending);
+        compact(NUM_WORKING_PATHS, d_mat_pending_ptr, d_mat_pending_valid_ptr, d_mat_pending_compact_ptr, d_num_mat_pending_ptr);
+        compact(NUM_WORKING_PATHS, d_gen_pending_ptr, d_gen_pending_valid_ptr, d_gen_pending_compact_ptr, d_num_gen_pending_ptr);
+        CHECK_CUDA(cudaMemcpy(&num_mat_pending, d_num_mat_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(&num_gen_pending, d_num_gen_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
         // termination condition (unable to spawn any ray)
         if (num_gen_pending == NUM_WORKING_PATHS && camera_ray_start_id >= camera_ray_end_id) break;
 
-        if (num_mat_pending > 0) {
-            mat<<<(num_mat_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
-            CHECK_CUDA(cudaGetLastError());
-            CHECK_CUDA(cudaDeviceSynchronize());
-        }
+        if (num_mat_pending > 0) mat<<<(num_mat_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
+        if (num_gen_pending > 0) gen<<<(num_gen_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(camera_ray_start_id);
+        camera_ray_start_id += num_gen_pending;
 
-        if (num_gen_pending > 0) {
-            gen<<<(num_gen_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(camera_ray_start_id);
-            CHECK_CUDA(cudaGetLastError());
-            CHECK_CUDA(cudaDeviceSynchronize());
-            camera_ray_start_id += num_gen_pending;
-        }
+        compact(NUM_WORKING_PATHS, d_ah_pending_ptr, d_ah_pending_valid_ptr, d_ah_pending_compact_ptr, d_num_ah_pending_ptr);
+        compact(3 * NUM_WORKING_PATHS, d_ch_pending_ptr, d_ch_pending_valid_ptr, d_ch_pending_compact_ptr, d_num_ch_pending_ptr);
+        CHECK_CUDA(cudaMemcpy(&num_ah_pending, d_num_ah_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(&num_ch_pending, d_num_ch_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
 
-        compact(NUM_WORKING_PATHS, d_ah_pending_ptr, d_ah_pending_valid_ptr, d_ah_pending_compact_ptr, &num_ah_pending);
-        compact(3 * NUM_WORKING_PATHS, d_ch_pending_ptr, d_ch_pending_valid_ptr, d_ch_pending_compact_ptr, &num_ch_pending);
-
-        if (num_ah_pending > 0) {
-            ah<<<(num_ah_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
-            CHECK_CUDA(cudaGetLastError());
-            CHECK_CUDA(cudaDeviceSynchronize());
-        }
-
-        if (num_ch_pending > 0) {
-            ch<<<(num_ch_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
-            CHECK_CUDA(cudaGetLastError());
-            CHECK_CUDA(cudaDeviceSynchronize());
-        }
+        if (num_ah_pending > 0) ah<<<(num_ah_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
+        if (num_ch_pending > 0) ch<<<(num_ch_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
     }
 
     // post-process framebuffer
