@@ -424,8 +424,8 @@ void render(int width, int height, int num_samples, int max_bounces,
 
         compact(NUM_WORKING_PATHS, d_mat_pending_ptr, d_mat_pending_valid_ptr, d_mat_pending_compact_ptr, d_num_mat_pending_ptr);
         compact(NUM_WORKING_PATHS, d_gen_pending_ptr, d_gen_pending_valid_ptr, d_gen_pending_compact_ptr, d_num_gen_pending_ptr);
-        CHECK_CUDA(cudaMemcpy(&num_mat_pending, d_num_mat_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
-        CHECK_CUDA(cudaMemcpy(&num_gen_pending, d_num_gen_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
+        cudaMemcpyAsync(&num_mat_pending, d_num_mat_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpyAsync(&num_gen_pending, d_num_gen_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost);
         // termination condition (unable to spawn any ray)
         if (num_gen_pending == NUM_WORKING_PATHS && camera_ray_start_id >= camera_ray_end_id) break;
 
@@ -435,8 +435,8 @@ void render(int width, int height, int num_samples, int max_bounces,
 
         compact(NUM_WORKING_PATHS, d_ah_pending_ptr, d_ah_pending_valid_ptr, d_ah_pending_compact_ptr, d_num_ah_pending_ptr);
         compact(3 * NUM_WORKING_PATHS, d_ch_pending_ptr, d_ch_pending_valid_ptr, d_ch_pending_compact_ptr, d_num_ch_pending_ptr);
-        CHECK_CUDA(cudaMemcpy(&num_ah_pending, d_num_ah_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
-        CHECK_CUDA(cudaMemcpy(&num_ch_pending, d_num_ch_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
+        cudaMemcpyAsync(&num_ah_pending, d_num_ah_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpyAsync(&num_ch_pending, d_num_ch_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost);
 
         if (num_ah_pending > 0) ah<<<(num_ah_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
         if (num_ch_pending > 0) ch<<<(num_ch_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
