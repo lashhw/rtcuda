@@ -76,6 +76,7 @@ __global__ void init_path_ray_payload() {
     int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (thread_id >= NUM_WORKING_PATHS) return;
 
+    d_path_ray_payload->hit_anything[thread_id] = false;
     // force the ray to be killed
     d_path_ray_payload->bounces[thread_id] = INT_MAX;
 }
@@ -427,7 +428,7 @@ void render(int width, int height, int num_samples, int max_bounces,
         CHECK_CUDA(cudaMemcpy(&num_mat_pending, d_num_mat_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(&num_gen_pending, d_num_gen_pending_ptr, sizeof(int), cudaMemcpyDeviceToHost));
         // termination condition (unable to spawn any ray)
-        if (num_gen_pending == NUM_WORKING_PATHS && camera_ray_start_id >= camera_ray_end_id) break;
+        if (num_mat_pending == 0 && camera_ray_start_id >= camera_ray_end_id) break;
 
         if (num_mat_pending > 0) mat<<<(num_mat_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>();
         if (num_gen_pending > 0) gen<<<(num_gen_pending + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(camera_ray_start_id);
