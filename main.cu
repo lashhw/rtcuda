@@ -57,7 +57,7 @@ int main() {
 
     // read bunny
     profiler.start("Reading bunny");
-    happly::PLYData ply_in("../bun_zipper.ply");
+    happly::PLYData ply_in("../dragon_remeshed.ply");
     std::vector<std::array<double, 3>> v_pos = ply_in.getVertexPositions();
     std::vector<std::vector<size_t>> f_index = ply_in.getFaceIndices<size_t>();
     profiler.stop();
@@ -65,9 +65,11 @@ int main() {
 
     // transform bunny
     profiler.start("Transforming bunny");
-    Transform transform(Matrix4x4::Translate(0.0946899f, -0.0329874f, -0.0587997f));
-    transform.composite(Matrix4x4::Scale(2.f, 2.f, 2.f));
-    transform.composite(Matrix4x4::Translate(0.3f, 0.f, -0.5f));
+    Transform transform(Matrix4x4::Rotate(1.f, 0.f, 0.f, -PI/2));
+    transform.composite(Matrix4x4::Rotate(0.f, 0.f, 1.f, 0.925f));
+    transform.composite(Matrix4x4::Translate(116.79f, 43.5557f, -38.559f));
+    transform.composite(Matrix4x4::Scale(0.002f, 0.002f, 0.002f));
+    transform.composite(Matrix4x4::Translate(0.2f, 0.f, -0.3f));
     for (auto &v : v_pos) transform.apply(v);
     profiler.stop();
 
