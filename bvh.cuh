@@ -301,11 +301,6 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect,
         }
     }
 
-    if (hit_anything) {
-        isect.p = d_isect_primitive->d_triangle->p(isect.u, isect.v);
-        isect.unit_n = -d_isect_primitive->d_triangle->n.unit_vector();
-    }
-
     return hit_anything;
 }
 

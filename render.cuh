@@ -149,17 +149,20 @@ __global__ void mat() {
     Material *d_mat = d_isect_primitive->d_mat;
     Vec3 multiplier = d_path_ray_payload->beta[path_ray_id] * d_scene.num_lights;
 
+    Vec3 isect_p = d_isect_primitive->d_triangle->p(isect.u, isect.v);
+    Vec3 isect_unit_n = -d_isect_primitive->d_triangle->n.unit_vector();
+
     // remember to store rand state back to global memory!!
     curandState local_rand_state = d_rand_states[path_ray_id];
 
     // generate next ray
     {
-        Vec3 unit_n = isect.unit_n, unit_wi;
+        Vec3 unit_n = isect_unit_n, unit_wi;
         float pdf;
         Vec3 f = d_mat->sample_f(unit_wo, local_rand_state, unit_n, unit_wi, pdf);
 
         // update PATH_RAY
-        d_ray_pool->ray[path_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
+        d_ray_pool->ray[path_ray_id] = Ray::spawn_offset_ray(isect_p, unit_n, unit_wi);
         d_path_ray_payload->beta[path_ray_id] *= f * dot(unit_wi, unit_n) / pdf;
 
         // add to d_ch_pending
@@ -180,8 +183,8 @@ __global__ void mat() {
     {
         Vec3 unit_wi, Li;
         float light_t, light_pdf;
-        if (light.sample_Li(isect, local_rand_state, unit_wi, Li, light_t, light_pdf)) {
-            Vec3 unit_n = dot(isect.unit_n, unit_wi) > 0.f ? isect.unit_n : -isect.unit_n;
+        if (light.sample_Li(isect_p, local_rand_state, unit_wi, Li, light_t, light_pdf)) {
+            Vec3 unit_n = dot(isect_unit_n, unit_wi) > 0.f ? isect_unit_n : -isect_unit_n;
             Vec3 f;
             float scattering_pdf;
             if (d_mat->get_f(unit_wo, unit_wi, unit_n, f, scattering_pdf)) {
@@ -190,7 +193,7 @@ __global__ void mat() {
                 // generate AH_SHADOW_RAY
                 int ah_ray_id = NUM_WORKING_PATHS + path_ray_id;
                 d_ray_pool->pixel_idx[ah_ray_id] = pixel_idx;
-                d_ray_pool->ray[ah_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi, light_t);
+                d_ray_pool->ray[ah_ray_id] = Ray::spawn_offset_ray(isect_p, unit_n, unit_wi, light_t);
                 d_ah_shadow_ray_payload->d_target_triangle[path_ray_id] = light.d_triangle;
                 if (light.is_delta()) {
                     d_ah_shadow_ray_payload->L[path_ray_id] = multiplier * f * Li / light_pdf;
@@ -210,7 +213,7 @@ __global__ void mat() {
     {
         if (!light.is_delta()) {
             // sample a direction based on material's BSDF
-            Vec3 unit_n = isect.unit_n, unit_wi;
+            Vec3 unit_n = isect_unit_n, unit_wi;
             float scattering_pdf;
             Vec3 f = d_mat->sample_f(unit_wo, local_rand_state, unit_n, unit_wi, scattering_pdf);
             f *= dot(unit_wi, unit_n);
@@ -218,7 +221,7 @@ __global__ void mat() {
             // if BSDF is specular, there is no need to apply MIS
             float weight = 1.f;
             if (!d_mat->is_specular()) {
-                float light_pdf = light.pdf_Li(isect, unit_wi);
+                float light_pdf = light.pdf_Li(isect_p, unit_wi);
                 if (light_pdf == 0.f) {
                     d_rand_states[path_ray_id] = local_rand_state;
                     return;
@@ -229,7 +232,7 @@ __global__ void mat() {
             // generate CH_SHADOW_RAY
             int ch_ray_id = 2 * NUM_WORKING_PATHS + path_ray_id;
             d_ray_pool->pixel_idx[ch_ray_id] = pixel_idx;
-            d_ray_pool->ray[ch_ray_id] = Ray::spawn_offset_ray(isect.p, unit_n, unit_wi);
+            d_ray_pool->ray[ch_ray_id] = Ray::spawn_offset_ray(isect_p, unit_n, unit_wi);
             d_ch_shadow_ray_payload->d_target_triangle[path_ray_id] = d_isect_primitive->d_triangle;
             d_ch_shadow_ray_payload->L[path_ray_id] = multiplier * f * light.L * weight / scattering_pdf;
 
@@ -296,12 +299,13 @@ __global__ void ch() {
 
     int ray_id = d_ch_pending_compact[thread_id];
 
+    Bvh bvh = d_scene.bvh;
     DeviceStack stack;
     Ray ray = d_ray_pool->ray[ray_id];
     Intersection isect;
     Primitive* d_isect_primitive;
 
-    bool hit_anything = d_scene.bvh.traverse(stack, ray, isect, d_isect_primitive);
+    bool hit_anything = bvh.traverse(stack, ray, isect, d_isect_primitive);
 
     if (ray_id < NUM_WORKING_PATHS) {
         // type == PATH_RAY
