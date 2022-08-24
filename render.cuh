@@ -282,10 +282,11 @@ __global__ void ah() {
     int ah_ray_id = d_ah_pending_compact[thread_id];
     int path_ray_id = ah_ray_id - NUM_WORKING_PATHS;
 
+    Bvh bvh = d_scene.bvh;
     DeviceStack stack;
     Ray ray = d_ray_pool->ray[ah_ray_id];
     Triangle *d_target_triangle = d_ah_shadow_ray_payload->d_target_triangle[path_ray_id];
-    bool hit_anything = d_scene.bvh.traverse(d_target_triangle, stack, ray);
+    bool hit_anything = bvh.traverse(d_target_triangle, stack, ray);
 
     if (!hit_anything) {
         Vec3::atomic_add(&d_framebuffer[d_ray_pool->pixel_idx[ah_ray_id]], d_ah_shadow_ray_payload->L[path_ray_id]);

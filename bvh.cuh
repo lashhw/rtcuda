@@ -249,8 +249,6 @@ __device__ bool Bvh::intersect_leaf(const Triangle *d_excluded_triangle, const N
 
 // closest-hit traverser
 __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect, Primitive* &d_isect_primitive) const {
-    stack.reset();
-
     if (d_nodes[0].is_leaf()) return intersect_leaf(&d_nodes[0], ray, isect, d_isect_primitive);
 
     bool hit_anything = false;
@@ -306,8 +304,6 @@ __device__ bool Bvh::traverse(DeviceStack &stack, Ray &ray, Intersection &isect,
 
 // any-hit traverser but exclude d_excluded_triangle
 __device__ bool Bvh::traverse(const Triangle *d_excluded_triangle, DeviceStack &stack, Ray &ray) const {
-    stack.reset();
-
     if (d_nodes[0].is_leaf()) return intersect_leaf(d_excluded_triangle, &d_nodes[0], ray);
 
     AABBIntersector aabb_intersector(ray);
